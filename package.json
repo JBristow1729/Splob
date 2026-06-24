@@ -1,0 +1,15 @@
+{
+  "name": "splob",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/static-server.mjs",
+    "build": "node scripts/build-check.mjs",
+    "test": "node scripts/build-check.mjs",
+    "relay": "node relay/server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.17.1"
+  }
+}
