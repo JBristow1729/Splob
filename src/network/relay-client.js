@@ -61,8 +61,6 @@ export class RelayClient {
         window.clearTimeout(this.connectTimeout);
         if (wasConnecting) {
           this.onStatus?.({ state: "error", message: "The multiplayer relay did not respond. Render may still be waking up, or the relay URL is incorrect." });
-        } else {
-          this.onStatus?.({ state: "closed", message: "Disconnected from multiplayer." });
         }
       });
       this.connectTimeout = window.setTimeout(() => {

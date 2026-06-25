@@ -410,6 +410,7 @@ export function createApp(root) {
         app.render();
         return;
       }
+      if (status.state === "closed") return;
       if (state.modal.includes("friends-dialog") && status.state === "connecting") return;
       state.modal = multiplayerStatusDialog(status);
       app.render();
