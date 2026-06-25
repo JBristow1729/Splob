@@ -380,6 +380,10 @@ export function createApp(root) {
 
   function startGame(config) {
     stopPlayAgainTimer();
+    if (state.game) {
+      state.game.stop();
+      state.game = null;
+    }
     state.pendingGame = { ...config, preferredColor: state.settings.preferredColor };
     recordRecentPlayers(state.pendingGame.players || []);
     state.screen = "game";
