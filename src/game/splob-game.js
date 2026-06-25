@@ -630,7 +630,6 @@ export class SplobGame {
       player.rollingPower = won;
       player.rollEndsAt = now + (player.local ? 3000 : 800);
       if (player.local) this.lastPowerShuffleStep = -1;
-      Sound.play("power");
     }
   }
 
@@ -719,23 +718,23 @@ export class SplobGame {
   }
 
   makeSplat(player, spread, now = performance.now()) {
-    this.paintSplatAsset(player, spread);
+    this.paintSplatAsset(player.x, player.y, player.color, spread);
     this.splats.push({ x: player.x, y: player.y, color: player.color, born: now });
   }
 
-  paintSplatAsset(player, spread) {
+  paintSplatAsset(x, y, playerColor, spread) {
     const imageIndex = (this.random() * Math.max(1, splatImages.length)) | 0;
     const size = Math.round(spread * (1.45 + this.random() * 0.35));
     const angle = this.random() * Math.PI * 2;
     const image = splatImages[imageIndex];
     if (!image || !image.complete || !image.naturalWidth) {
-      this.paintCtx.fillStyle = PLAYER_COLORS[player.color].paint;
+      this.paintCtx.fillStyle = PLAYER_COLORS[playerColor].paint;
       this.paintCtx.beginPath();
-      this.paintCtx.arc(player.x, player.y, spread * 0.55, 0, Math.PI * 2);
+      this.paintCtx.arc(x, y, spread * 0.55, 0, Math.PI * 2);
       this.paintCtx.fill();
       return;
     }
-    const color = PLAYER_COLORS[player.color].paint;
+    const color = PLAYER_COLORS[playerColor].paint;
     this.splatTintCanvas.width = size;
     this.splatTintCanvas.height = size;
     this.splatTintCtx.clearRect(0, 0, size, size);
@@ -745,7 +744,7 @@ export class SplobGame {
     this.splatTintCtx.fillRect(0, 0, size, size);
     this.splatTintCtx.globalCompositeOperation = "source-over";
     this.paintCtx.save();
-    this.paintCtx.translate(player.x, player.y);
+    this.paintCtx.translate(x, y);
     this.paintCtx.rotate(angle);
     this.paintCtx.drawImage(this.splatTintCanvas, -size / 2, -size / 2);
     this.paintCtx.restore();
@@ -1478,7 +1477,6 @@ export class SplobGame {
       player.bounceMoveUntil = localExpiryTime(item.bounceMoveUntil);
       if (player.local && !previousRolling && player.rollingPower) {
         this.lastPowerShuffleStep = -1;
-        Sound.play("power");
       }
       if (player.local && previousRolling && !player.rollingPower && player.power) {
         this.lastPowerShuffleStep = -1;
@@ -1531,6 +1529,11 @@ export class SplobGame {
   drawServerPaintStamp(stamp) {
     const color = PLAYER_COLORS[stamp.color]?.paint || PLAYER_COLORS[this.players.find((player) => player.id === stamp.playerId)?.color]?.paint;
     if (!color) return;
+    if (stamp.type === "splat") {
+      const playerColor = PLAYER_COLORS[stamp.color] ? stamp.color : this.players.find((player) => player.id === stamp.playerId)?.color;
+      if (playerColor) this.paintSplatAsset(Number(stamp.x || 0), Number(stamp.y || 0), playerColor, Number(stamp.radius || radius * 6));
+      return;
+    }
     this.paintCtx.save();
     this.paintCtx.globalCompositeOperation = "source-over";
     this.paintCtx.fillStyle = color;

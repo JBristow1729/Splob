@@ -1,4 +1,4 @@
-const cacheName = "splob-v7";
+const cacheName = "splob-v8";
 const assets = [
   "/",
   "/index.html",

@@ -489,7 +489,7 @@ function consumePowerUse(match, player, input, now) {
     return;
   }
   if (power === "splat") {
-    addPaintStamp(match, player, PLAYER_RADIUS * 5);
+    addPaintStamp(match, player, PLAYER_RADIUS * 6, { type: "splat" });
     return;
   }
   const opponents = match.players.filter((opponent) => opponent.id !== player.id && opponent.connected && opponent.shieldUntil <= now);
@@ -517,8 +517,8 @@ function playerSizeMultiplier(player, now) {
   return grow * shrink;
 }
 
-function addPaintStamp(match, player, radius) {
-  const stamp = { playerId: player.id, x: round(player.x), y: round(player.y), radius, color: player.color, tick: match.tick };
+function addPaintStamp(match, player, radius, options = {}) {
+  const stamp = { playerId: player.id, x: round(player.x), y: round(player.y), radius, color: player.color, tick: match.tick, ...options };
   applyStampToScoreGrid(match, stamp);
   match.paintQueue.push(stamp);
 }
