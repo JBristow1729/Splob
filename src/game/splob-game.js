@@ -15,7 +15,7 @@ const accelerationPerSecond = (maxMoveSpeed / 2.5) * 2.5 * 1.3;
 const decelerationPerSecond = accelerationPerSecond * 1.8;
 const wallSpeedRetain = 0.75;
 const bounceMs = 800;
-const bumpGraceMs = 2500;
+const bumpGraceMs = 1000;
 const bounceSpeedTieTolerance = 8;
 const bounceSpeed = baseSpeed * 1.5;
 const bounceDistance = radius * 0.8;
@@ -646,7 +646,7 @@ export class SplobGame {
   }
 
   hasCollisionGrace(player, now) {
-    return player.shieldUntil > now || (player.bounceInvulnerableUntil > now && player.bounceUntil <= now);
+    return player.shieldUntil > now || player.bounceInvulnerableUntil > now;
   }
 
   hasBounceImmunity(player, now) {
@@ -1383,7 +1383,7 @@ export class SplobGame {
     const bounce = 0;
     const shielded = player.shieldUntil > now;
     const bouncing = player.bounceUntil > now && !shielded;
-    const bounceInvulnerable = player.bounceInvulnerableUntil > now && player.bounceUntil <= now && !shielded;
+    const bounceInvulnerable = player.bounceInvulnerableUntil > now && !shielded;
     const frozen = player.effects.freezeUntil > now;
     const immobilisedWiggle = bouncing && now >= player.bounceMoveUntil ? Math.sin(now / 38) * 0.08 : 0;
     this.ctx.save();

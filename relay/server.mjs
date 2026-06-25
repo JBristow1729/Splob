@@ -42,7 +42,7 @@ const placePowerBands = [
 const placePowerWeights = [0.7, 0.18, 0.08, 0.04];
 const wallSpeedRetain = 0.75;
 const bounceMs = 800;
-const bumpGraceMs = 2500;
+const bumpGraceMs = 1000;
 const bounceSpeedTieTolerance = 8;
 const bounceSpeed = 444;
 const bounceDistance = PLAYER_RADIUS * 0.8;
@@ -601,7 +601,7 @@ function clearBounce(player) {
 }
 
 function hasCollisionGrace(player, now) {
-  return player.shieldUntil > now || (player.bounceInvulnerableUntil > now && player.bounceUntil <= now);
+  return player.shieldUntil > now || player.bounceInvulnerableUntil > now;
 }
 
 function hasBounceImmunity(player, now) {
