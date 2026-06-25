@@ -818,7 +818,7 @@ export class SplobGame {
       }
     }
     counts.forEach((count, previousOwnerIndex) => {
-      if (!count) continue;
+      if (!count) return;
       const color = COLOR_ORDER[previousOwnerIndex - 1];
       this.players
         .filter((candidate) => candidate.color === color)
