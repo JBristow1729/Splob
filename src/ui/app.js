@@ -15,7 +15,17 @@ import {
   setRemoteUsername,
   wholegrainLinkUrl
 } from "../services/profile.js";
-import { friendsDialog, optionsDialog, renderGame, renderJoin, renderLobby, renderMultiplayer, renderTitle } from "./templates.js";
+import {
+  friendsDialog,
+  multiplayerStatusDialog,
+  optionsDialog,
+  renderGame,
+  renderJoin,
+  renderLobby,
+  renderMultiplayer,
+  renderTitle,
+  usernameDialog
+} from "./templates.js";
 
 export function createApp(root) {
   const state = {
@@ -35,7 +45,10 @@ export function createApp(root) {
     requests: [],
     searchResults: [],
     searchQuery: "",
-    friendsError: ""
+    friendsError: "",
+    profileError: "",
+    pendingProfileAction: "",
+    relayStatus: null
   };
 
   Sound.configure(state.settings.sfx / 100);
@@ -45,7 +58,9 @@ export function createApp(root) {
       app.render();
       refreshFriends();
     }
-  }).catch(() => undefined);
+  }).catch((error) => {
+    state.profileError = error.message || "Profile service is unavailable.";
+  });
 
   const app = {
     render() {
@@ -80,6 +95,9 @@ export function createApp(root) {
   }
 
   function bind() {
+    root.querySelectorAll(".dialog").forEach((element) => {
+      element.addEventListener("click", (event) => event.stopPropagation());
+    });
     root.querySelectorAll("[data-action]").forEach((element) => {
       element.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -100,13 +118,17 @@ export function createApp(root) {
         if (state.settings.username.trim()) {
           try {
             state.profile = await setRemoteUsername(state.settings.username.trim());
+            state.profileError = "";
             refreshFriends();
-          } catch {
-            state.profile ||= { username: state.settings.username.trim(), hash: "local" };
+          } catch (error) {
+            state.profileError = error.message || "Profile service is unavailable.";
           }
         }
         app.render();
       });
+    });
+    root.querySelector("input[name=usernamePrompt]")?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") saveUsername();
     });
     root.querySelectorAll("input[name=public]").forEach((input) => {
       input.addEventListener("change", () => {
@@ -148,9 +170,9 @@ export function createApp(root) {
     if (action?.startsWith("challengeFriend:")) return challengeFriend();
     const actions = {
       singleplayer: () => startGame({ mode: "singleplayer", players: localPlayers() }),
-      multiplayer: () => go("multiplayer"),
-      host: () => hostLobby(),
-      join: () => openJoin(),
+      multiplayer: () => requireProfile("multiplayer") || go("multiplayer"),
+      host: () => requireProfile("host") || hostLobby(),
+      join: () => requireProfile("join") || openJoin(),
       refreshLobbies: () => state.relay?.send({ type: "lobbies:list" }),
       joinPrivate: () => joinPrivate(),
       ready: () => toggleReady(),
@@ -166,6 +188,7 @@ export function createApp(root) {
         state.modal = "";
         app.render();
       },
+      saveUsername: () => saveUsername(),
       linkAccount: () => window.open(wholegrainLinkUrl(), "_blank", "noopener")
     };
     actions[action]?.();
@@ -203,12 +226,23 @@ export function createApp(root) {
   function ensureRelay() {
     if (state.relay) return state.relay;
     state.relay = new RelayClient();
+    state.relay.onStatus = (status) => {
+      state.relayStatus = status;
+      if (status.state === "connected") {
+        if (state.modal.includes("relay-dialog")) state.modal = "";
+        app.render();
+        return;
+      }
+      state.modal = multiplayerStatusDialog(status);
+      app.render();
+    };
     state.relay.onLobbies = (lobbies) => {
       state.lobbies = lobbies;
       app.render();
     };
     state.relay.onLobby = (lobby) => {
       state.lobby = lobby;
+      state.modal = "";
       if (state.screen !== "lobby") go("lobby");
       else app.render();
     };
@@ -236,18 +270,19 @@ export function createApp(root) {
 
   function hostLobby() {
     const relay = ensureRelay();
-    state.lobby = {
-      code: String(Math.floor(1000 + Math.random() * 9000)),
-      public: false,
-      players: [{ ...localLobbyPlayer(), ready: false, local: true }]
-    };
-    relay.send({ type: "lobby:create", public: false, player: state.lobby.players[0] });
-    go("lobby");
+    if (!relay.send({ type: "lobby:create", public: false, player: localLobbyPlayer() })) return;
+    state.modal = multiplayerStatusDialog({ state: "connecting", message: "Creating your lobby. This can take up to 60 seconds if the relay is waking up." });
+    app.render();
   }
 
   function openJoin() {
-    ensureRelay().send({ type: "lobbies:list" });
+    const relay = ensureRelay();
+    if (!relay.send({ type: "lobbies:list" })) return;
     go("join");
+    if (state.relayStatus?.state !== "connected") {
+      state.modal = multiplayerStatusDialog(state.relayStatus || { state: "connecting" });
+      app.render();
+    }
   }
 
   function joinPrivate() {
@@ -256,7 +291,10 @@ export function createApp(root) {
   }
 
   function joinLobby(code) {
-    ensureRelay().send({ type: "lobby:join", code, player: localLobbyPlayer() });
+    const relay = ensureRelay();
+    if (!relay.send({ type: "lobby:join", code, player: localLobbyPlayer() })) return;
+    state.modal = multiplayerStatusDialog({ state: "connecting", message: "Joining the lobby. This can take up to 60 seconds if the relay is waking up." });
+    app.render();
   }
 
   function localLobbyPlayer() {
@@ -303,7 +341,53 @@ export function createApp(root) {
 
   function challengeFriend() {
     state.modal = "";
-    hostLobby();
+    requireProfile("host") || hostLobby();
+  }
+
+  function hasProfile() {
+    return Boolean(state.profile?.id && state.profile?.hash);
+  }
+
+  function requireProfile(nextAction) {
+    if (hasProfile()) return false;
+    state.pendingProfileAction = nextAction;
+    state.modal = usernameDialog(state);
+    app.render();
+    return true;
+  }
+
+  async function saveUsername() {
+    const input = root.querySelector("input[name=usernamePrompt]");
+    const usernameValue = sanitizeUsername(input?.value || "");
+    if (!usernameValue) {
+      state.profileError = "Choose a username first.";
+      state.modal = usernameDialog(state);
+      app.render();
+      return;
+    }
+    state.settings.username = usernameValue;
+    saveSettings(state.settings);
+    try {
+      state.profile = await setRemoteUsername(usernameValue);
+      state.profileError = "";
+      const next = state.pendingProfileAction;
+      state.pendingProfileAction = "";
+      state.modal = "";
+      await refreshFriends();
+      runProfileAction(next);
+    } catch (error) {
+      state.profileError = error.message || "Profile service is unavailable.";
+      state.modal = usernameDialog(state);
+      app.render();
+    }
+  }
+
+  function runProfileAction(action) {
+    if (action === "multiplayer") return go("multiplayer");
+    if (action === "host") return hostLobby();
+    if (action === "join") return openJoin();
+    if (action?.startsWith("friends:")) return openFriends(action.split(":")[1]);
+    app.render();
   }
 
   function refreshFriends() {
@@ -320,13 +404,13 @@ export function createApp(root) {
 
   function openFriends(tab) {
     state.friendsTab = tab;
-    if (!state.profile) {
-      state.modal = optionsDialog(state.settings, state.profile);
+    if (!hasProfile()) {
+      requireProfile(`friends:${tab}`);
     } else {
       refreshFriends();
       state.modal = friendsDialog(state);
+      app.render();
     }
-    app.render();
   }
 
   async function friendAction(id, kind) {

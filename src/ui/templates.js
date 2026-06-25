@@ -164,6 +164,44 @@ export function optionsDialog(settings, profile) {
   `;
 }
 
+export function usernameDialog(state) {
+  const value = escapeHtml(state.settings.username || state.profile?.username || "");
+  return `
+    <section class="dialog paint-dialog username-dialog" role="dialog" aria-modal="true" aria-labelledby="usernameTitle">
+      <div class="dialog-heading">
+        <span>Profile</span>
+        <h2 id="usernameTitle">Choose a username</h2>
+      </div>
+      <p class="empty">Multiplayer and friends need a Splob profile before they can connect.</p>
+      <label class="field">
+        <span>Username</span>
+        <input name="usernamePrompt" maxlength="16" value="${value}" placeholder="Player" />
+      </label>
+      ${state.profileError ? `<p class="error">${escapeHtml(state.profileError)}</p>` : ""}
+      <div class="dialog-actions">
+        ${button("Cancel", "closeModal", "button-small button-secondary")}
+        ${button("Save", "saveUsername", "button-small")}
+      </div>
+    </section>
+  `;
+}
+
+export function multiplayerStatusDialog(status) {
+  const heading = status?.state === "missing-url" ? "Relay not configured" : status?.state === "error" ? "Connection failed" : "Connecting";
+  const message = status?.message || "Connecting to multiplayer. This can take up to 60 seconds if the relay is waking up.";
+  const canClose = status?.state === "missing-url" || status?.state === "error" || status?.state === "closed";
+  return `
+    <section class="dialog paint-dialog relay-dialog" role="dialog" aria-modal="true" aria-labelledby="relayTitle">
+      <div class="dialog-heading">
+        <span>Multiplayer</span>
+        <h2 id="relayTitle">${escapeHtml(heading)}</h2>
+      </div>
+      <p class="empty">${escapeHtml(message)}</p>
+      ${canClose ? `<div class="dialog-actions">${button("OK", "closeModal", "button-small")}</div>` : `<div class="dialog-actions"><span class="loading-dot" aria-hidden="true"></span></div>`}
+    </section>
+  `;
+}
+
 export function friendsDialog(state) {
   const tab = state.friendsTab;
   const lists = { friends: state.friends, recents: state.recents, requests: state.requests, search: state.searchResults };

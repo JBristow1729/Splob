@@ -468,6 +468,27 @@ button {
   flex-wrap: wrap;
 }
 
+.loading-dot {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  background: var(--paint-blue);
+  box-shadow: 1.4rem 0 0 var(--paint-yellow), -1.4rem 0 0 var(--paint-pink);
+  animation: dotPulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes dotPulse {
+  from {
+    transform: scale(0.8);
+    opacity: 0.6;
+  }
+
+  to {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+}
+
 .tabs {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
