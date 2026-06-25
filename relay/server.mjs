@@ -65,6 +65,8 @@ const wss = new WebSocketServer({ server });
 const clients = new Map();
 const lobbies = new Map();
 const matches = new Map();
+const onlineProfiles = new Map();
+const profileWatchers = new Set();
 
 wss.on("connection", (socket) => {
   const id = randomUUID();
@@ -79,49 +81,84 @@ wss.on("connection", (socket) => {
   });
   socket.on("close", () => {
     const client = clients.get(id);
+    if (client?.profileId && onlineProfiles.get(client.profileId)?.id === id) onlineProfiles.delete(client.profileId);
+    profileWatchers.delete(id);
     if (client?.matchId) markDisconnected(id, client.matchId);
     if (client?.lobbyCode) leaveLobby(id, client.lobbyCode);
     clients.delete(id);
+    broadcastProfileStatuses();
     broadcastLobbies();
   });
 });
 
 function handle(id, message) {
+  if (message.type === "identify") return identify(id, message.profile);
+  if (message.type === "watchProfiles") return watchProfiles(id, message.profileIds);
   if (message.type === "lobbies:list") return send(id, { type: "lobbies", lobbies: publicLobbies() });
   if (message.type === "lobby:create") return createLobby(id, message);
-  if (message.type === "lobby:join") return joinLobby(id, message.code, message.player);
+  if (message.type === "lobby:join") return joinLobby(id, message.code, message.player, message.lobbyId);
+  if (message.type === "acceptInvite") return joinLobby(id, null, message.player, message.lobbyId);
+  if (message.type === "inviteFriend") return inviteFriend(id, message.targetProfileId, message.lobbyId);
+  if (message.type === "declineInvite") return declineInvite(id, message.lobbyId);
   if (message.type === "lobby:update") return updateLobby(id, message.lobby);
   if (message.type === "lobby:kick") return kickPlayer(id, message.playerId);
   if (message.type === "game:start") return startGame(id);
+  if (message.type === "game:leave") return leaveMatch(id);
+  if (message.type === "playAgain:decide") return decidePlayAgain(id, Boolean(message.again));
   if (message.type === "ready") return setReady(id, true);
   if (message.type === "input") return receiveInput(id, message);
   if (message.type === "usePower") return receiveUsePower(id, message);
   if (message.type === "debug") return receiveDebug(id, message);
 }
 
+function identify(id, profile = {}) {
+  const client = clients.get(id);
+  if (!client || !profile?.id) return;
+  client.profileId = profile.id;
+  client.username = String(profile.username || client.username || "Player").slice(0, 24);
+  client.hash = profile.hash;
+  onlineProfiles.set(profile.id, client);
+  broadcastProfileStatuses();
+}
+
+function watchProfiles(id, profileIds = []) {
+  const client = clients.get(id);
+  if (!client) return;
+  client.watchedProfileIds = [...new Set((profileIds || []).filter(Boolean))];
+  profileWatchers.add(id);
+  sendProfileStatuses(id);
+}
+
 function createLobby(id, message) {
   const code = uniqueCode();
   const lobby = {
+    id: code,
     code,
     hostId: id,
     public: Boolean(message.public),
     players: [normalizeLobbyPlayer(message.player, id, 0)]
   };
   lobbies.set(code, lobby);
-  clients.get(id).lobbyCode = code;
+  clients.get(id).lobbyCode = lobby.code;
+  clients.get(id).username = lobby.players[0].name;
+  clients.get(id).profileId = lobby.players[0].profileId || clients.get(id).profileId;
   send(id, { type: "lobby", lobby });
+  broadcastProfileStatuses();
   broadcastLobbies();
 }
 
-function joinLobby(id, code, player) {
-  const lobby = lobbies.get(code);
+function joinLobby(id, code, player, lobbyId) {
+  const lobby = lobbies.get(lobbyId || code);
   if (!lobby || lobby.players.length >= 4 || lobby.started) return send(id, { type: "join:error", reason: "not-found" });
   const used = new Set(lobby.players.map((item) => item.color));
   const preferred = COLOR_ORDER.includes(player?.color) ? player.color : COLOR_ORDER[0];
   const color = used.has(preferred) ? COLOR_ORDER.find((item) => !used.has(item)) : preferred;
   lobby.players.push(normalizeLobbyPlayer({ ...player, color }, id, lobby.players.length));
-  clients.get(id).lobbyCode = code;
+  clients.get(id).lobbyCode = lobby.code;
+  clients.get(id).username = player?.name || player?.username || clients.get(id).username;
+  clients.get(id).profileId = player?.profileId || clients.get(id).profileId;
   broadcastLobby(lobby);
+  broadcastProfileStatuses();
   broadcastLobbies();
 }
 
@@ -177,6 +214,44 @@ function kickPlayer(id, playerId) {
   broadcastLobbies();
 }
 
+function inviteFriend(id, targetProfileId, lobbyId) {
+  const client = clients.get(id);
+  const lobby = lobbies.get(lobbyId || client?.lobbyCode);
+  if (!client || !lobby || lobby.started || lobby.players.length >= 4) {
+    send(id, { type: "inviteUnavailable", reason: "full" });
+    return;
+  }
+  if (client.profileId === targetProfileId) return;
+  const target = onlineProfiles.get(targetProfileId);
+  if (!target) {
+    send(id, { type: "inviteUnavailable", reason: "offline" });
+    return;
+  }
+  const targetMatch = target.matchId ? matches.get(target.matchId) : null;
+  if (targetMatch && !targetMatch.ended) {
+    send(id, { type: "inviteUnavailable", reason: "in-game" });
+    return;
+  }
+  const targetLobby = target.lobbyCode ? lobbies.get(target.lobbyCode) : null;
+  if (targetLobby?.started) {
+    send(id, { type: "inviteUnavailable", reason: "in-game" });
+    return;
+  }
+  send(target.id, {
+    type: "inviteChallenge",
+    from: { id: client.profileId, username: client.username || lobby.players.find((player) => player.socketId === id)?.name || "Player", hash: client.hash },
+    lobbyId: lobby.code
+  });
+  send(id, { type: "inviteSent" });
+}
+
+function declineInvite(id, lobbyId) {
+  const lobby = lobbies.get(lobbyId);
+  const host = lobby?.players.find((player) => player.socketId === lobby.hostId);
+  if (!host) return;
+  send(host.socketId, { type: "inviteDeclined", from: { username: clients.get(id)?.username || "Player" } });
+}
+
 function startGame(id) {
   const lobby = lobbies.get(clients.get(id)?.lobbyCode);
   if (!lobby || lobby.hostId !== id || lobby.started) return;
@@ -214,6 +289,7 @@ function startGame(id) {
     config: { mode: "multiplayer", authoritative: true, players: serializePlayers(match), ...matchConfig() }
   });
   match.interval = setInterval(() => tickMatch(match.id), tickMs);
+  broadcastProfileStatuses();
   broadcastLobbies();
 }
 
@@ -831,7 +907,7 @@ function broadcastScore(match) {
   broadcastMatch(match, {
     type: "scoreUpdate",
     serverTick: match.tick,
-    scores: match.players.map((player) => ({ playerId: player.id, score: player.score }))
+    scores: activePlayers(match).map((player) => ({ playerId: player.id, score: player.score }))
   });
 }
 
@@ -842,19 +918,132 @@ function finishMatch(match) {
   flushPaint(match);
   broadcastScore(match);
   updatePlayerScores(match);
-  const standings = [...match.players].sort((a, b) => (b.score - a.score) || a.spawnIndex - b.spawnIndex);
+  const standings = activePlayers(match).sort((a, b) => (b.score - a.score) || a.spawnIndex - b.spawnIndex);
   broadcastMatch(match, {
     type: "gameOver",
     winnerPlayerId: standings[0]?.id || null,
     finalScores: standings.map((player) => ({ playerId: player.id, score: player.score }))
   });
+  match.playAgain = {
+    decisions: new Map(activePlayers(match).map((player) => [player.socketId, "pending"])),
+    deadline: Date.now() + 30000,
+    timer: setTimeout(() => resolvePlayAgain(match.id), 30000)
+  };
   setTimeout(() => cleanupMatch(match.id), 30000).unref?.();
+}
+
+function leaveMatch(socketId) {
+  const match = matches.get(clients.get(socketId)?.matchId);
+  const player = match?.players.find((item) => item.socketId === socketId);
+  if (!match || !player || player.removed) return;
+  player.removed = true;
+  player.connected = false;
+  player.vx = 0;
+  player.vy = 0;
+  player.power = null;
+  player.rollingPower = null;
+  match.inputs.delete(socketId);
+  match.projectiles = match.projectiles.filter((projectile) => projectile.owner !== player.id);
+  const client = clients.get(socketId);
+  if (client) client.matchId = null;
+  broadcastSnapshot(match);
+  broadcastScore(match);
+  broadcastProfileStatuses();
+  if (!match.ended && activePlayers(match).length <= 1) finishMatch(match);
+}
+
+function decidePlayAgain(socketId, again) {
+  const match = matches.get(clients.get(socketId)?.matchId);
+  if (!match?.ended || !match.playAgain?.decisions.has(socketId)) return;
+  match.playAgain.decisions.set(socketId, again ? "again" : "menu");
+  if (!again) {
+    const client = clients.get(socketId);
+    if (client?.matchId === match.id) client.matchId = null;
+  }
+  broadcastPlayAgainUpdate(match);
+  if ([...match.playAgain.decisions.values()].every((decision) => decision !== "pending")) resolvePlayAgain(match.id);
+}
+
+function resolvePlayAgain(matchId) {
+  const match = matches.get(matchId);
+  if (!match?.playAgain) return;
+  clearTimeout(match.playAgain.timer);
+  const decisions = match.playAgain.decisions;
+  for (const [socketId, decision] of decisions) {
+    if (decision === "pending") {
+      decisions.set(socketId, "menu");
+      const client = clients.get(socketId);
+      if (client?.matchId === match.id) client.matchId = null;
+    }
+  }
+  const againSocketIds = [...decisions.entries()].filter(([, decision]) => decision === "again").map(([socketId]) => socketId);
+  match.playAgain = null;
+  if (againSocketIds.length < 2) {
+    for (const socketId of againSocketIds) {
+      send(socketId, { type: "playAgain:alone" });
+      const client = clients.get(socketId);
+      if (client?.matchId === match.id) client.matchId = null;
+    }
+    cleanupMatch(match.id);
+    return;
+  }
+  const lobby = {
+    id: uniqueCode(),
+    code: uniqueCode(),
+    hostId: againSocketIds[0],
+    public: false,
+    players: againSocketIds.map((socketId, index) => {
+      const previous = match.players.find((player) => player.socketId === socketId);
+      return normalizeLobbyPlayer({
+        id: previous?.id,
+        profileId: previous?.profileId,
+        hash: clients.get(socketId)?.hash,
+        name: previous?.name || clients.get(socketId)?.username,
+        color: previous?.color || COLOR_ORDER[index]
+      }, socketId, index);
+    })
+  };
+  const next = createMatch(lobby);
+  matches.set(next.id, next);
+  for (const player of next.players) {
+    const client = clients.get(player.socketId);
+    if (client) client.matchId = next.id;
+    send(player.socketId, {
+      type: "joined",
+      playerId: player.id,
+      socketId: player.socketId,
+      matchId: next.id,
+      serverTick: next.tick,
+      matchConfig: matchConfig()
+    });
+  }
+  broadcastMatch(next, {
+    type: "match:start",
+    matchId: next.id,
+    serverTick: next.tick,
+    startAt: next.startsAt,
+    players: serializePlayers(next),
+    config: { mode: "multiplayer", authoritative: true, players: serializePlayers(next), ...matchConfig() }
+  });
+  next.interval = setInterval(() => tickMatch(next.id), tickMs);
+  cleanupMatch(match.id);
+}
+
+function broadcastPlayAgainUpdate(match) {
+  const decisions = match.playAgain?.decisions;
+  if (!decisions) return;
+  const count = [...decisions.values()].filter((decision) => decision === "again").length;
+  const deadline = match.playAgain.deadline;
+  for (const [socketId, decision] of decisions) {
+    if (decision === "again") send(socketId, { type: "playAgain:update", count, deadline });
+  }
 }
 
 function cleanupMatch(matchId) {
   const match = matches.get(matchId);
   if (!match) return;
   clearInterval(match.interval);
+  if (match.playAgain?.timer) clearTimeout(match.playAgain.timer);
   for (const player of match.players) {
     const client = clients.get(player.socketId);
     if (client?.matchId === matchId) client.matchId = null;
@@ -868,6 +1057,7 @@ function markDisconnected(socketId, matchId) {
   if (!player) return;
   player.connected = false;
   match.inputs.set(socketId, emptyInput());
+  if (!match.ended && activePlayers(match).length <= 1) finishMatch(match);
 }
 
 function leaveLobby(id, code) {
@@ -900,7 +1090,11 @@ function publicLobbies() {
 }
 
 function broadcastMatch(match, message) {
-  for (const player of match.players) send(player.socketId, message);
+  for (const player of activePlayers(match)) send(player.socketId, message);
+}
+
+function activePlayers(match) {
+  return match.players.filter((player) => !player.removed && player.connected !== false);
 }
 
 function send(id, message) {
@@ -909,7 +1103,7 @@ function send(id, message) {
 }
 
 function serializePlayers(match) {
-  return match.players.map((player) => ({
+  return activePlayers(match).map((player) => ({
     id: player.id,
     socketId: player.socketId,
     profileId: player.profileId,
@@ -932,6 +1126,21 @@ function serializePlayers(match) {
     bounceUntil: player.bounceUntil,
     bounceMoveUntil: player.bounceMoveUntil
   }));
+}
+
+function sendProfileStatuses(id) {
+  const client = clients.get(id);
+  if (!client) return;
+  const statuses = Object.fromEntries((client.watchedProfileIds || []).map((profileId) => {
+    const target = onlineProfiles.get(profileId);
+    const targetMatch = target?.matchId ? matches.get(target.matchId) : null;
+    return [profileId, { online: Boolean(target), inGame: Boolean(targetMatch && !targetMatch.ended) }];
+  }));
+  send(id, { type: "profileStatuses", statuses });
+}
+
+function broadcastProfileStatuses() {
+  for (const id of profileWatchers) sendProfileStatuses(id);
 }
 
 function serializeProjectiles(match) {

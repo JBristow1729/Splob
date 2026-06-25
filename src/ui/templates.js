@@ -1,7 +1,7 @@
 import { COLOR_ORDER, PLAYER_COLORS, POWER_UPS } from "../config.js";
 import { escapeHtml, fittedTextStyle } from "../utils/html.js";
 
-const APP_VERSION = "0.0.1";
+const APP_VERSION = "0.6.0";
 
 const assetButtons = {
   "Singleplayer": "/assets/ui/singleplayer.png",
@@ -58,6 +58,7 @@ export function renderLobby(state) {
   const slots = Array.from({ length: 4 }, (_, index) => lobby?.players?.[index] || null);
   return `
     <main class="screen lobby-screen">
+      ${menuSplats()}
       <section class="panel lobby-panel">
         <div class="panel-heading">
           <span>Lobby Code</span>
@@ -84,6 +85,7 @@ export function renderLobby(state) {
 export function renderJoin(state) {
   return `
     <main class="screen join-screen">
+      ${menuSplats()}
       <section class="panel join-panel">
         <div class="join-grid">
           <section>
@@ -117,14 +119,15 @@ export function renderGame(state) {
       <div class="game-hud">
         <div class="score-panel" id="scorePanel" aria-live="polite"></div>
         <div class="timer-pill" id="timerPill">1:00</div>
-        <button class="icon-button leave-game" data-action="leaveGame" aria-label="Main menu">x</button>
       </div>
       <section class="canvas-frame">
         <canvas id="gameCanvas"></canvas>
         <div class="game-overlay" id="gameOverlay"></div>
       </section>
       ${showDebug ? debugPanel() : ""}
+      <button class="button button-small button-secondary leave-game" data-action="leaveGame">Leave</button>
       <button class="power-box" id="powerBox" type="button" aria-label="Use power-up"></button>
+      ${state.modal ? modal(state.modal) : ""}
     </main>
   `;
 }
@@ -147,10 +150,6 @@ export function optionsDialog(settings, profile) {
       <label class="field">
         <span>Username</span>
         <input name="username" maxlength="16" value="${escapeHtml(settings.username)}" placeholder="Player" />
-      </label>
-      <label class="toggle-row debug-option">
-        <input name="debugPanel" type="checkbox" ${settings.debugPanel ? "checked" : ""} />
-        <span>Debug panel</span>
       </label>
       <div class="field">
         <span>Preferred Splob Colour</span>
@@ -234,9 +233,15 @@ export function friendsDialog(state) {
   const rows = lists[tab] || [];
   return `
     <section class="dialog paint-dialog friends-dialog" role="dialog" aria-modal="true" aria-labelledby="friendsTitle">
-      <div class="dialog-heading">
-        <span>${state.profile ? `#${state.profile.hash}` : "Local"}</span>
-        <h2 id="friendsTitle">${state.profile ? escapeHtml(state.profile.username) : "Profile"}</h2>
+      <div class="profile-summary">
+        <div>
+          <span>Name</span>
+          <strong id="friendsTitle" ${fittedTextStyle(state.profile?.username || "Profile")}>${state.profile ? escapeHtml(state.profile.username) : "Profile"}</strong>
+        </div>
+        <div>
+          <span>Hash number</span>
+          <strong>${state.profile ? `#${state.profile.hash}` : "Local"}</strong>
+        </div>
       </div>
       <div class="tabs">
         ${["friends", "recents", "search", "requests"].map((item) => `<button class="${tab === item ? "active" : ""}" data-action="friendsTab:${item}">${item}${item === "requests" && state.requests.length ? ` <b>${state.requests.length}</b>` : ""}</button>`).join("")}
@@ -247,6 +252,46 @@ export function friendsDialog(state) {
       </div>
       ${state.friendsError ? `<p class="error">${escapeHtml(state.friendsError)}</p>` : ""}
       <div class="dialog-actions">${button("Close", "closeModal", "button-small")}</div>
+    </section>
+  `;
+}
+
+export function confirmLeaveDialog() {
+  return `
+    <section class="dialog paint-dialog leave-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="leaveTitle">
+      <div class="dialog-heading">
+        <span>Leave game</span>
+        <h2 id="leaveTitle">Are you sure you want to leave?</h2>
+      </div>
+      <div class="dialog-actions">
+        ${button("No", "closeModal", "button-small button-secondary")}
+        ${button("Yes", "confirmLeaveGame", "button-small")}
+      </div>
+    </section>
+  `;
+}
+
+export function noticeDialog(title, action = "closeModal") {
+  return `
+    <section class="dialog paint-dialog notice-dialog" role="dialog" aria-modal="true">
+      <p class="empty">${escapeHtml(title)}</p>
+      <div class="dialog-actions">${button("OK", action, "button-small")}</div>
+    </section>
+  `;
+}
+
+export function playAgainWaitingDialog(state) {
+  const deadline = Number(state.playAgainDeadline || 0);
+  const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+  const count = Number(state.playAgainCount || 1);
+  return `
+    <section class="dialog paint-dialog play-again-dialog" role="dialog" aria-modal="true" aria-labelledby="playAgainTitle">
+      <div class="dialog-heading">
+        <span>${seconds}s</span>
+        <h2 id="playAgainTitle">Play again lobby</h2>
+      </div>
+      <p class="empty">${count} player${count === 1 ? "" : "s"} ready for another round.</p>
+      <div class="dialog-actions">${button("Main Menu", "playAgainMainMenu", "button-small button-secondary")}</div>
     </section>
   `;
 }

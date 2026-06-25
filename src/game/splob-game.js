@@ -1604,6 +1604,8 @@ export class SplobGame {
       born: performance.now() - Math.max(0, Date.now() - Number(power.born || Date.now()))
     }));
     const receivedAt = performance.now();
+    const snapshotPlayerIds = new Set((snapshot.players || []).map((player) => player.id));
+    this.players = this.players.filter((player) => snapshotPlayerIds.has(player.id));
     const knownProjectiles = new Map(this.projectiles.map((projectile) => [projectile.id, projectile]));
     const seenProjectiles = new Set();
     for (const item of snapshot.projectiles || []) {
@@ -1803,9 +1805,11 @@ export class SplobGame {
     this.overlay.innerHTML = `
       <div class="countdown result-title">${escapeText(label)}</div>
       <div class="result-actions">
+        <button class="button asset-button result-asset-button" data-game-action="again" aria-label="Play Again"><img src="/assets/ui/play-again.png" alt="" draggable="false" /></button>
         <button class="button asset-button result-asset-button" data-game-action="menu" aria-label="Main Menu"><img src="/assets/ui/main-menu.png" alt="" draggable="false" /></button>
       </div>
     `;
+    this.overlay.querySelector('[data-game-action="again"]').addEventListener("click", () => this.hooks.onAgain?.());
     this.overlay.querySelector('[data-game-action="menu"]').addEventListener("click", () => this.hooks.onMenu?.());
     Sound.play("fanfare");
     if (this.winner?.local) Sound.play("win");

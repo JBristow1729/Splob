@@ -17,6 +17,13 @@ export class RelayClient {
     this.onPaintBatch = null;
     this.onScoreUpdate = null;
     this.onGameOver = null;
+    this.onPlayAgainUpdate = null;
+    this.onPlayAgainAlone = null;
+    this.onInviteChallenge = null;
+    this.onInviteUnavailable = null;
+    this.onInviteSent = null;
+    this.onInviteDeclined = null;
+    this.onProfileStatuses = null;
     this.onServerError = null;
     this.onJoinError = null;
     this.onKicked = null;
@@ -103,6 +110,13 @@ export class RelayClient {
     if (message.type === "paintBatch") this.onPaintBatch?.(message);
     if (message.type === "scoreUpdate") this.onScoreUpdate?.(message);
     if (message.type === "gameOver") this.onGameOver?.(message);
+    if (message.type === "playAgain:update") this.onPlayAgainUpdate?.(message);
+    if (message.type === "playAgain:alone") this.onPlayAgainAlone?.(message);
+    if (message.type === "inviteChallenge") this.onInviteChallenge?.(message);
+    if (message.type === "inviteUnavailable") this.onInviteUnavailable?.(message.reason);
+    if (message.type === "inviteSent") this.onInviteSent?.(message);
+    if (message.type === "inviteDeclined") this.onInviteDeclined?.(message);
+    if (message.type === "profileStatuses") this.onProfileStatuses?.(message.statuses || {});
     if (message.type === "serverError") this.onServerError?.(message);
     if (message.type === "game:event") this.onGameEvent?.(message.event);
     if (message.type === "join:error") this.onJoinError?.(message.reason);

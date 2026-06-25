@@ -16,9 +16,12 @@ import {
   wholegrainLinkUrl
 } from "../services/profile.js";
 import {
+  confirmLeaveDialog,
   friendsDialog,
   multiplayerStatusDialog,
+  noticeDialog,
   optionsDialog,
+  playAgainWaitingDialog,
   renderGame,
   renderJoin,
   renderLobby,
@@ -26,6 +29,16 @@ import {
   renderTitle,
   usernameDialog
 } from "./templates.js";
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[char]);
+}
 
 export function createApp(root) {
   const state = {
@@ -50,6 +63,15 @@ export function createApp(root) {
     friendsError: "",
     profileError: "",
     pendingProfileAction: "",
+    pendingChallenge: null,
+    incomingInvite: null,
+    inviteNotice: null,
+    profileStatuses: {},
+    searchSeq: 0,
+    searchTimer: 0,
+    playAgainDeadline: 0,
+    playAgainCount: 0,
+    playAgainTimer: 0,
     relayStatus: null
   };
 
@@ -57,6 +79,7 @@ export function createApp(root) {
   fetchProfile().then((profile) => {
     if (profile) {
       state.profile = profile;
+      state.relay?.send({ type: "identify", profile });
       app.render();
       refreshFriends();
     }
@@ -66,6 +89,10 @@ export function createApp(root) {
 
   const app = {
     render() {
+      if (state.screen === "game" && state.game) {
+        updateGameModal();
+        return;
+      }
       if (state.game) {
         state.game.stop();
         state.game = null;
@@ -82,6 +109,29 @@ export function createApp(root) {
       if (state.screen === "game") startCanvasGame();
     }
   };
+
+  function updateGameModal() {
+    root.querySelector(".dialog-backdrop")?.remove();
+    if (!state.modal) return;
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+    backdrop.dataset.action = "closeModal";
+    backdrop.innerHTML = state.modal;
+    backdrop.addEventListener("click", (event) => {
+      event.stopPropagation();
+      handleAction("closeModal");
+    });
+    backdrop.querySelectorAll(".dialog").forEach((element) => {
+      element.addEventListener("click", (event) => event.stopPropagation());
+    });
+    backdrop.querySelectorAll("[data-action]").forEach((element) => {
+      element.addEventListener("click", (event) => {
+        event.stopPropagation();
+        handleAction(element.dataset.action);
+      });
+    });
+    root.querySelector(".game-screen")?.appendChild(backdrop);
+  }
 
   function go(screen) {
     if (state.screen !== screen) state.previous.push(state.screen);
@@ -126,6 +176,7 @@ export function createApp(root) {
         if (state.settings.username.trim()) {
           try {
             state.profile = await setRemoteUsername(state.settings.username.trim());
+            state.relay?.send({ type: "identify", profile: state.profile });
             state.profileError = "";
             refreshFriends();
           } catch (error) {
@@ -155,13 +206,25 @@ export function createApp(root) {
     });
     root.querySelector("input[name=friendSearch]")?.addEventListener("input", (event) => {
       state.searchQuery = event.target.value;
-      searchPlayers(state.searchQuery).then((results) => {
-        state.searchResults = results;
-        app.render();
-      }).catch(() => {
-        state.searchResults = [];
-        app.render();
-      });
+      window.clearTimeout(state.searchTimer);
+      const seq = ++state.searchSeq;
+      state.searchTimer = window.setTimeout(() => {
+        searchPlayers(state.searchQuery).then((results) => {
+          if (seq !== state.searchSeq) return;
+          state.searchResults = results;
+          watchVisibleProfiles();
+          state.modal = friendsDialog(state);
+          app.render();
+          const input = root.querySelector("input[name=friendSearch]");
+          input?.focus();
+          input?.setSelectionRange?.(input.value.length, input.value.length);
+        }).catch(() => {
+          if (seq !== state.searchSeq) return;
+          state.searchResults = [];
+          state.modal = friendsDialog(state);
+          app.render();
+        });
+      }, 180);
     });
   }
 
@@ -175,7 +238,7 @@ export function createApp(root) {
     if (action?.startsWith("removeFriend:")) return friendAction(action.split(":")[1], "remove");
     if (action?.startsWith("acceptFriend:")) return friendAction(action.split(":")[1], "accept");
     if (action?.startsWith("rejectFriend:")) return friendAction(action.split(":")[1], "reject");
-    if (action?.startsWith("challengeFriend:")) return challengeFriend();
+    if (action?.startsWith("challengeFriend:")) return challengeFriend(action.split(":")[1]);
     const actions = {
       singleplayer: () => startGame({ mode: "singleplayer", players: localPlayers() }),
       multiplayer: () => requireProfile("multiplayer") || go("multiplayer"),
@@ -186,13 +249,26 @@ export function createApp(root) {
       ready: () => toggleReady(),
       startMultiplayer: () => startMultiplayer(),
       back,
-      leaveGame: () => go("title"),
+      leaveGame: () => {
+        state.modal = confirmLeaveDialog();
+        app.render();
+      },
+      confirmLeaveGame: () => leaveCurrentGame(),
+      playAgainMainMenu: () => choosePlayAgain(false),
+      playAgainAloneOk: () => go("title"),
+      acceptInvite: () => acceptInvite(),
+      declineInvite: () => declineInvite(),
       options: () => {
         state.modal = optionsDialog(state.settings, state.profile);
         app.render();
       },
       friends: () => openFriends("friends"),
       closeModal: () => {
+        if (state.modal.includes("play-again-alone")) return go("title");
+        if (state.modal.includes("play-again-dialog")) return choosePlayAgain(false);
+        if (state.incomingInvite) state.relay?.send({ type: "declineInvite", lobbyId: state.incomingInvite.lobbyId });
+        state.incomingInvite = null;
+        state.inviteNotice = null;
         state.modal = "";
         app.render();
       },
@@ -211,8 +287,14 @@ export function createApp(root) {
       results: root.querySelector("#scorePanel")
     };
     state.game = new SplobGame(canvas, overlay, hud, state.pendingGame, {
-      onAgain: () => startGame(state.pendingGame),
-      onMenu: () => go("title"),
+      onAgain: () => {
+        if (state.pendingGame?.authoritative) return choosePlayAgain(true);
+        startGame(state.pendingGame);
+      },
+      onMenu: () => {
+        if (state.pendingGame?.authoritative) state.relay?.send({ type: "playAgain:decide", again: false });
+        go("title");
+      },
       onDebug: (event) => sendDebugEvent(event),
       onInput: (event) => {
         if (state.pendingGame?.authoritative) {
@@ -297,6 +379,7 @@ export function createApp(root) {
   }
 
   function startGame(config) {
+    stopPlayAgainTimer();
     state.pendingGame = { ...config, preferredColor: state.settings.preferredColor };
     recordRecentPlayers(state.pendingGame.players || []);
     state.screen = "game";
@@ -318,10 +401,12 @@ export function createApp(root) {
     state.relay.onStatus = (status) => {
       state.relayStatus = status;
       if (status.state === "connected") {
+        if (state.profile) state.relay?.send({ type: "identify", profile: state.profile });
         if (state.modal.includes("relay-dialog")) state.modal = "";
         app.render();
         return;
       }
+      if (state.modal.includes("friends-dialog") && status.state === "connecting") return;
       state.modal = multiplayerStatusDialog(status);
       app.render();
     };
@@ -332,6 +417,10 @@ export function createApp(root) {
     state.relay.onLobby = (lobby) => {
       state.lobby = lobby;
       state.modal = "";
+      if (state.pendingChallenge && lobby?.players?.length === 1) {
+        state.relay?.send({ type: "inviteFriend", targetProfileId: state.pendingChallenge.id, lobbyId: lobby.id || lobby.code });
+        state.pendingChallenge = null;
+      }
       if (state.screen !== "lobby") go("lobby");
       else app.render();
     };
@@ -343,6 +432,50 @@ export function createApp(root) {
     state.relay.onPaintBatch = (batch) => state.game?.applyPaintBatch?.(batch);
     state.relay.onScoreUpdate = (update) => state.game?.applyScoreUpdate?.(update);
     state.relay.onGameOver = (result) => state.game?.applyGameOver?.(result);
+    state.relay.onPlayAgainUpdate = (message) => {
+      state.playAgainDeadline = message.deadline;
+      state.playAgainCount = message.count;
+      state.modal = playAgainWaitingDialog(state);
+      app.render();
+      startPlayAgainTimer();
+    };
+    state.relay.onPlayAgainAlone = () => {
+      stopPlayAgainTimer();
+      state.modal = `<div class="play-again-alone">${noticeDialog("No other players chose Play Again.", "playAgainAloneOk")}</div>`;
+      app.render();
+    };
+    state.relay.onInviteChallenge = (message) => {
+      state.incomingInvite = message;
+      state.modal = `<section class="dialog paint-dialog invite-dialog" role="dialog" aria-modal="true"><p class="empty">${escapeHtml(message.from?.username || "A player")} challenged you to a game.</p><div class="dialog-actions"><button class="button button-small button-secondary" data-action="declineInvite"><span>Decline</span></button><button class="button button-small" data-action="acceptInvite"><span>Accept</span></button></div></section>`;
+      app.render();
+    };
+    state.relay.onInviteUnavailable = (reason) => {
+      const copy = {
+        offline: "That player is offline.",
+        "in-game": "This user is already in a game!",
+        full: "That lobby is now full."
+      }[reason] || "That challenge is unavailable.";
+      state.inviteNotice = reason;
+      state.modal = noticeDialog(copy);
+      app.render();
+    };
+    state.relay.onInviteSent = () => {
+      state.inviteNotice = "sent";
+      state.modal = noticeDialog("Invitation sent.");
+      app.render();
+    };
+    state.relay.onInviteDeclined = (message) => {
+      state.inviteNotice = "rejected";
+      state.modal = noticeDialog(`${message.from?.username || "That player"} rejected your challenge!`);
+      app.render();
+    };
+    state.relay.onProfileStatuses = (statuses) => {
+      state.profileStatuses = { ...state.profileStatuses, ...statuses };
+      if (state.modal.includes("friends-dialog")) {
+        state.modal = friendsDialog(state);
+        app.render();
+      }
+    };
     state.relay.onServerError = (message) => {
       state.modal = `<section class="dialog paint-dialog"><h2>Server error</h2><p>${message.message || "The multiplayer server could not process that request."}</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;
       app.render();
@@ -409,6 +542,38 @@ export function createApp(root) {
     };
   }
 
+  function leaveCurrentGame() {
+    if (state.pendingGame?.authoritative) state.relay?.send({ type: "game:leave" });
+    go("title");
+  }
+
+  function choosePlayAgain(again) {
+    if (!state.pendingGame?.authoritative) return;
+    state.relay?.send({ type: "playAgain:decide", again });
+    if (!again) return go("title");
+    state.playAgainDeadline = Date.now() + 30000;
+    state.playAgainCount = 1;
+    state.modal = playAgainWaitingDialog(state);
+    app.render();
+    startPlayAgainTimer();
+  }
+
+  function startPlayAgainTimer() {
+    stopPlayAgainTimer();
+    state.playAgainTimer = window.setInterval(() => {
+      if (!state.modal.includes("play-again-dialog")) return stopPlayAgainTimer();
+      state.modal = playAgainWaitingDialog(state);
+      app.render();
+      if (Date.now() >= state.playAgainDeadline) stopPlayAgainTimer();
+    }, 500);
+  }
+
+  function stopPlayAgainTimer() {
+    if (!state.playAgainTimer) return;
+    window.clearInterval(state.playAgainTimer);
+    state.playAgainTimer = 0;
+  }
+
   function toggleReady() {
     const me = state.lobby?.players.find((player) => player.local);
     if (!me) return;
@@ -446,9 +611,24 @@ export function createApp(root) {
     state.relay?.send({ type: "game:start", config: { mode: "multiplayer" } });
   }
 
-  function challengeFriend() {
+  function challengeFriend(id) {
+    const player = [...state.friends, ...state.recents, ...state.requests, ...state.searchResults].find((item) => item.id === id);
+    if (!player) return;
+    if (!hasProfile()) return requireProfile("friends:friends");
+    const status = state.profileStatuses[player.id];
+    if (status && !status.online) {
+      state.modal = noticeDialog("That player is offline.");
+      app.render();
+      return;
+    }
+    if (status?.inGame) {
+      state.modal = noticeDialog("This user is already in a game!");
+      app.render();
+      return;
+    }
+    state.pendingChallenge = player;
     state.modal = "";
-    requireProfile("host") || hostLobby();
+    hostLobby();
   }
 
   function hasProfile() {
@@ -476,6 +656,7 @@ export function createApp(root) {
     saveSettings(state.settings);
     try {
       state.profile = await setRemoteUsername(usernameValue);
+      state.relay?.send({ type: "identify", profile: state.profile });
       state.profileError = "";
       const next = state.pendingProfileAction;
       state.pendingProfileAction = "";
@@ -503,6 +684,7 @@ export function createApp(root) {
       state.recents = data.recents || [];
       state.requests = data.requests || [];
       state.friendsError = "";
+      watchVisibleProfiles();
       app.render();
     }).catch(() => {
       state.friendsError = "Friends are unavailable while the profile service is offline.";
@@ -516,8 +698,32 @@ export function createApp(root) {
     } else {
       refreshFriends();
       state.modal = friendsDialog(state);
+      watchVisibleProfiles();
       app.render();
     }
+  }
+
+  function watchVisibleProfiles() {
+    if (!state.profile?.id) return;
+    const ids = [...new Set([...state.friends, ...state.recents, ...state.requests, ...state.searchResults].map((player) => player.id).filter(Boolean))];
+    if (!ids.length) return;
+    ensureRelay().send({ type: "watchProfiles", profileIds: ids });
+  }
+
+  function acceptInvite() {
+    if (!state.incomingInvite || !hasProfile()) return;
+    const invite = state.incomingInvite;
+    state.incomingInvite = null;
+    ensureRelay().send({ type: "acceptInvite", lobbyId: invite.lobbyId, player: localLobbyPlayer() });
+    state.modal = multiplayerStatusDialog({ state: "connecting", message: "Joining the challenge." });
+    app.render();
+  }
+
+  function declineInvite() {
+    if (state.incomingInvite) state.relay?.send({ type: "declineInvite", lobbyId: state.incomingInvite.lobbyId });
+    state.incomingInvite = null;
+    state.modal = "";
+    app.render();
   }
 
   async function friendAction(id, kind) {
@@ -530,6 +736,7 @@ export function createApp(root) {
       if (kind === "reject") await answerFriendRequest(id, false);
       await refreshFriends();
       state.modal = friendsDialog(state);
+      watchVisibleProfiles();
       app.render();
     } catch (error) {
       state.friendsError = error.message || "Friend action failed.";

@@ -84,7 +84,9 @@ button {
   -webkit-mask: var(--splat-image) center / contain no-repeat;
 }
 
-.menu-screen > * {
+.menu-screen > *,
+.lobby-screen > *,
+.join-screen > * {
   z-index: 1;
 }
 
@@ -372,6 +374,38 @@ button {
   gap: 1rem;
 }
 
+.friends-dialog {
+  width: min(720px, calc(100vw - 2rem));
+  height: min(680px, calc(100vh - 2rem));
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+}
+
+.profile-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: end;
+}
+
+.profile-summary div {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.profile-summary span {
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  color: rgba(47, 32, 38, 0.62);
+}
+
+.profile-summary strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: calc(clamp(1.6rem, 4vw, 2.6rem) * var(--text-fit-scale, 1));
+  line-height: 1;
+}
+
 .dialog-heading,
 .panel-heading,
 .section-title {
@@ -516,6 +550,12 @@ button {
 .slot-grid {
   display: grid;
   gap: 0.7rem;
+}
+
+.friends-dialog .friend-list {
+  min-height: 0;
+  overflow: auto;
+  align-content: start;
 }
 
 .friend-card,
@@ -753,13 +793,10 @@ button {
 }
 
 .leave-game {
-  right: 1rem;
-  top: 1rem;
-  width: 3rem;
-  height: 3rem;
-  border-radius: 50%;
-  font-weight: 900;
-  pointer-events: auto;
+  position: fixed;
+  left: 1rem;
+  bottom: 1rem;
+  z-index: 7;
 }
 
 .canvas-frame {
@@ -1100,10 +1137,8 @@ button {
   }
 
   .leave-game {
-    top: max(0.45rem, env(safe-area-inset-top));
-    right: 0.45rem;
-    width: 2.65rem;
-    height: 2.65rem;
+    left: 0.45rem;
+    bottom: max(0.45rem, env(safe-area-inset-bottom));
   }
 
   .debug-panel {
@@ -1191,8 +1226,7 @@ button {
     height: 3.25rem;
   }
 
-  .timer-pill,
-  .leave-game {
+  .timer-pill {
     min-height: 2.35rem;
     height: 2.35rem;
   }
