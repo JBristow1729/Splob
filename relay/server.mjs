@@ -56,8 +56,9 @@ const spikyProjectileSpikeRadius = spikyProjectileRadius * 1.28;
 const splatAssetCount = 3;
 const maxPaintTrailDistance = PLAYER_RADIUS * 3;
 const fartChargeCells = 80000;
-const fartCloudRadius = PLAYER_RADIUS * 2;
+const fartImpactRadius = PLAYER_RADIUS * 3;
 const fartDebuffMs = 5000;
+const fartSpinMs = fartDebuffMs / 2;
 const fartCloudMs = 1200;
 
 const server = createServer((req, res) => {
@@ -803,9 +804,9 @@ function activateFart(match, player, now) {
   for (const target of match.players) {
     if (target.id === player.id) continue;
     if (!target.connected || target.deadUntil > now) continue;
-    if (Math.hypot(target.x - player.x, target.y - player.y) > fartCloudRadius) continue;
+    if (Math.hypot(target.x - player.x, target.y - player.y) > fartImpactRadius) continue;
     target.effects.bananaSlowUntil = now + powerDuration(match, fartDebuffMs);
-    target.effects.spinUntil = now + powerDuration(match, fartDebuffMs);
+    target.effects.spinUntil = now + powerDuration(match, fartSpinMs);
     target.effects.fartInvulnerableUntil = now + powerDuration(match, fartDebuffMs);
     target.bounceInvulnerableUntil = Math.max(target.bounceInvulnerableUntil || 0, now + powerDuration(match, fartDebuffMs));
   }

@@ -33,8 +33,10 @@ const spikyProjectileRadius = 45;
 const spikyProjectileSpikeRadius = spikyProjectileRadius * 1.28;
 const maxPaintTrailDistance = radius * 3;
 const fartChargeSamples = 16000;
-const fartCloudRadius = radius * 2;
+const fartImpactRadius = radius * 3;
+const fartVisualRadius = fartImpactRadius;
 const fartDebuffMs = 5000;
+const fartSpinMs = fartDebuffMs / 2;
 const fartCloudMs = 1200;
 const paintOwnerGridWidth = 160;
 const paintOwnerGridHeight = 90;
@@ -936,10 +938,10 @@ export class SplobGame {
     player.effects.boostUntil = now + this.powerDuration(5000);
     player.effects.bounceImmuneUntil = now + this.powerDuration(5000);
     this.players
-      .filter((target) => target.id !== player.id && target.deadUntil <= now && Math.hypot(target.x - player.x, target.y - player.y) <= fartCloudRadius)
+      .filter((target) => target.id !== player.id && target.deadUntil <= now && Math.hypot(target.x - player.x, target.y - player.y) <= fartImpactRadius)
       .forEach((target) => {
         target.effects.bananaSlowUntil = now + this.powerDuration(fartDebuffMs);
-        target.effects.spinUntil = now + this.powerDuration(fartDebuffMs);
+        target.effects.spinUntil = now + this.powerDuration(fartSpinMs);
         target.effects.fartInvulnerableUntil = now + this.powerDuration(fartDebuffMs);
         target.bounceInvulnerableUntil = Math.max(target.bounceInvulnerableUntil || 0, now + this.powerDuration(fartDebuffMs));
       });
@@ -1601,14 +1603,14 @@ export class SplobGame {
     this.ctx.strokeStyle = "rgba(61, 112, 31, 0.72)";
     this.ctx.lineWidth = 5;
     this.ctx.beginPath();
-    this.ctx.arc(player.x, player.y, fartCloudRadius * (0.78 + age * 0.22), 0, Math.PI * 2);
+    this.ctx.arc(player.x, player.y, fartVisualRadius * (0.78 + age * 0.22), 0, Math.PI * 2);
     this.ctx.fill();
     this.ctx.stroke();
     this.ctx.globalAlpha = Math.max(0, 0.86 - age * 0.52);
     for (let i = 0; i < 13; i += 1) {
       const angle = (Math.PI * 2 * i) / 13 + now / 340;
-      const distance = fartCloudRadius * (0.24 + age * 0.48);
-      const puff = fartCloudRadius * (0.24 + (i % 3) * 0.045 + age * 0.1);
+      const distance = fartVisualRadius * (0.24 + age * 0.48);
+      const puff = fartVisualRadius * (0.24 + (i % 3) * 0.045 + age * 0.1);
       this.ctx.beginPath();
       this.ctx.arc(player.x + Math.cos(angle) * distance, player.y + Math.sin(angle) * distance, puff, 0, Math.PI * 2);
       this.ctx.fill();
