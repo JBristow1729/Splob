@@ -30,6 +30,11 @@ const countdownMs = 3400;
 const powerRadius = 56;
 const maxPowerUps = 5;
 const powerIds = ["boost", "grow", "messy", "splat", "shield", "slow", "shrink", "reverse", "freeze"];
+const wallSpeedRetain = 0.75;
+const bounceMs = 800;
+const bumpGraceMs = 5000;
+const bounceSpeed = 444;
+const bounceDistance = PLAYER_RADIUS * 0.8;
 
 const server = createServer((req, res) => {
   if (req.url === "/health") {
@@ -221,7 +226,15 @@ function createMatch(lobby) {
       power: null,
       effects: {},
       shieldUntil: 0,
-      lastPowerSeq: 0
+      lastPowerSeq: 0,
+      rollingPower: null,
+      rollEndsAt: 0,
+      bounceUntil: 0,
+      bounceMoveUntil: 0,
+      bounceInvulnerableUntil: 0,
+      bounceVx: 0,
+      bounceVy: 0,
+      lastCollisionAt: 0
     };
   });
   return {
@@ -256,10 +269,12 @@ function uniquePlayerId(id, used) {
 function receiveInput(id, message) {
   const match = matches.get(clients.get(id)?.matchId);
   if (!match || match.ended) return;
+  const previous = match.inputs.get(id) || emptyInput();
   match.inputs.set(id, {
     seq: Number(message.seq || 0),
     keys: normalizeInputKeys(message.keys),
-    clientTime: Number(message.clientTime || 0)
+    clientTime: Number(message.clientTime || 0),
+    usePowerSeq: previous.usePowerSeq
   });
 }
 
@@ -284,6 +299,7 @@ function tickMatch(matchId) {
   for (const player of match.players) {
     if (!player.connected) continue;
     expireEffects(player, now);
+    resolveRollingPower(player, now);
     consumePowerUse(match, player, match.inputs.get(player.socketId) || emptyInput(), now);
     movePlayer(player, match.inputs.get(player.socketId) || emptyInput(), dt, now);
     collectPowerUps(match, player, now);
@@ -307,11 +323,22 @@ function movePlayer(player, input, dt, now) {
   const boost = player.effects.boostUntil > now ? 1.5 : 1;
   const reversed = player.effects.reverseUntil > now;
   const frozen = player.effects.freezeUntil > now;
+  const bounceImmune = hasBounceImmunity(player, now);
+  if (bounceImmune && player.bounceUntil > now) clearBounce(player);
   const speedLimit = MAX_MOVE_SPEED * slow * boost;
-  const targetX = frozen ? 0 : (reversed ? -xAxis : xAxis) * speedLimit;
-  const targetY = frozen ? 0 : (reversed ? -yAxis : yAxis) * speedLimit;
-  player.vx = approachVelocity(player.vx, targetX, dt);
-  player.vy = approachVelocity(player.vy, targetY, dt);
+  if (frozen) {
+    player.vx = 0;
+    player.vy = 0;
+  } else if (player.bounceUntil > now && !bounceImmune) {
+    player.vx = now < player.bounceMoveUntil ? player.bounceVx : 0;
+    player.vy = now < player.bounceMoveUntil ? player.bounceVy : 0;
+  } else {
+    if (player.bounceUntil && player.bounceUntil <= now) clearBounce(player);
+    const targetX = (reversed ? -xAxis : xAxis) * speedLimit;
+    const targetY = (reversed ? -yAxis : yAxis) * speedLimit;
+    player.vx = approachVelocity(player.vx, targetX, dt);
+    player.vy = approachVelocity(player.vy, targetY, dt);
+  }
   if (Math.hypot(player.vx, player.vy) > 8) player.angle = Math.atan2(player.vy, player.vx);
   const size = playerSizeMultiplier(player, now);
   const halfWidth = BODY_HALF_WIDTH * size;
@@ -320,8 +347,8 @@ function movePlayer(player, input, dt, now) {
   const nextY = player.y + player.vy * dt;
   const clampedX = clamp(nextX, halfWidth, ARENA_WIDTH - halfWidth);
   const clampedY = clamp(nextY, halfHeight, ARENA_HEIGHT - halfHeight);
-  if (clampedX !== nextX) player.vx = 0;
-  if (clampedY !== nextY) player.vy = 0;
+  if (clampedX !== nextX) player.vx = -player.vx * wallSpeedRetain;
+  if (clampedY !== nextY) player.vy = -player.vy * wallSpeedRetain;
   player.x = clampedX;
   player.y = clampedY;
 }
@@ -344,17 +371,65 @@ function resolveBlobCollisions(match, now) {
       a.y = clamp(a.y - ny * push, BODY_HALF_HEIGHT, ARENA_HEIGHT - BODY_HALF_HEIGHT);
       b.x = clamp(b.x + nx * push, BODY_HALF_WIDTH, ARENA_WIDTH - BODY_HALF_WIDTH);
       b.y = clamp(b.y + ny * push, BODY_HALF_HEIGHT, ARENA_HEIGHT - BODY_HALF_HEIGHT);
-      const aNormalVelocity = a.vx * nx + a.vy * ny;
-      const bNormalVelocity = b.vx * nx + b.vy * ny;
-      if (aNormalVelocity > bNormalVelocity) {
-        const exchange = aNormalVelocity - bNormalVelocity;
-        a.vx -= nx * exchange * 0.8;
-        a.vy -= ny * exchange * 0.8;
-        b.vx += nx * exchange * 0.8;
-        b.vy += ny * exchange * 0.8;
-      }
+      applyBlobBounce(a, b, nx, ny, now);
     }
   }
+}
+
+function applyBlobBounce(a, b, nx, ny, now) {
+  const aBoosted = hasBounceImmunity(a, now);
+  const bBoosted = hasBounceImmunity(b, now);
+  const aShielded = hasCollisionGrace(a, now);
+  const bShielded = hasCollisionGrace(b, now);
+  const aInvulnerable = a.bounceInvulnerableUntil > now;
+  const bInvulnerable = b.bounceInvulnerableUntil > now;
+  if ((aInvulnerable || bInvulnerable) && !aBoosted && !bBoosted && !aShielded && !bShielded) return;
+  if ((aBoosted || aShielded) && !bBoosted && !bShielded) {
+    startBounce(b, nx, ny, now);
+  } else if ((bBoosted || bShielded) && !aBoosted && !aShielded) {
+    startBounce(a, -nx, -ny, now);
+  } else {
+    const aDir = oppositeTravelDirection(a, -nx, -ny);
+    const bDir = oppositeTravelDirection(b, nx, ny);
+    startBounce(a, aDir.x, aDir.y, now);
+    startBounce(b, bDir.x, bDir.y, now);
+  }
+  a.lastCollisionAt = now;
+  b.lastCollisionAt = now;
+}
+
+function startBounce(player, dx, dy, now) {
+  if (hasBounceImmunity(player, now) || hasCollisionGrace(player, now)) return;
+  const length = Math.hypot(dx, dy) || 1;
+  player.bounceVx = (dx / length) * bounceSpeed;
+  player.bounceVy = (dy / length) * bounceSpeed;
+  player.bounceMoveUntil = now + Math.min(bounceMs, (bounceDistance / bounceSpeed) * 1000);
+  player.bounceUntil = now + bounceMs;
+  player.bounceInvulnerableUntil = now + bumpGraceMs;
+  player.vx = 0;
+  player.vy = 0;
+}
+
+function clearBounce(player) {
+  player.bounceUntil = 0;
+  player.bounceMoveUntil = 0;
+  player.bounceVx = 0;
+  player.bounceVy = 0;
+}
+
+function hasCollisionGrace(player, now) {
+  return player.shieldUntil > now || (player.bounceInvulnerableUntil > now && player.bounceUntil <= now);
+}
+
+function hasBounceImmunity(player, now) {
+  return player.shieldUntil > now || player.effects.bounceImmuneUntil > now;
+}
+
+function oppositeTravelDirection(player, fallbackX, fallbackY) {
+  const speed = Math.hypot(player.vx, player.vy);
+  if (speed > 8) return { x: -player.vx / speed, y: -player.vy / speed };
+  const fallbackLength = Math.hypot(fallbackX, fallbackY) || 1;
+  return { x: fallbackX / fallbackLength, y: fallbackY / fallbackLength };
 }
 
 function spawnPowerUp(match, now) {
@@ -370,24 +445,34 @@ function spawnPowerUp(match, now) {
 }
 
 function collectPowerUps(match, player, now) {
-  if (player.power) return;
+  if (player.power || player.rollingPower) return;
   const hit = match.powerUps.find((power) => Math.hypot(power.x - player.x, power.y - player.y) <= PLAYER_RADIUS + powerRadius);
   if (!hit) return;
   match.powerUps = match.powerUps.filter((power) => power.id !== hit.id);
-  player.power = powerIds[(Math.random() * powerIds.length) | 0];
+  player.rollingPower = powerIds[(Math.random() * powerIds.length) | 0];
+  player.rollEndsAt = now + 3000;
+}
+
+function resolveRollingPower(player, now) {
+  if (!player.rollingPower || now < player.rollEndsAt) return;
+  if (!player.power) player.power = player.rollingPower;
+  player.rollingPower = null;
+  player.rollEndsAt = 0;
 }
 
 function consumePowerUse(match, player, input, now) {
-  if (!player.power || !input.usePowerSeq || input.usePowerSeq === player.lastPowerSeq) return;
+  if (!player.power || player.rollingPower || !input.usePowerSeq || input.usePowerSeq === player.lastPowerSeq) return;
   player.lastPowerSeq = input.usePowerSeq;
   const power = player.power;
   player.power = null;
   if (power === "boost") {
     player.effects.boostUntil = now + 5000;
+    player.effects.bounceImmuneUntil = now + 5000;
     return;
   }
   if (power === "grow") {
     player.effects.growUntil = now + 5000;
+    player.effects.bounceImmuneUntil = now + 5000;
     return;
   }
   if (power === "messy") {
@@ -407,9 +492,10 @@ function consumePowerUse(match, player, input, now) {
   if (power === "shrink") opponents.forEach((opponent) => (opponent.effects.shrinkUntil = now + 5000));
   if (power === "reverse") opponents.forEach((opponent) => (opponent.effects.reverseUntil = now + 5000));
   if (power === "freeze") opponents.forEach((opponent) => {
-    opponent.effects.freezeUntil = now + 3000;
+    opponent.effects.freezeUntil = now + 5000;
     opponent.vx = 0;
     opponent.vy = 0;
+    clearBounce(opponent);
   });
 }
 
@@ -583,8 +669,12 @@ function serializePlayers(match) {
     connected: player.connected,
     score: player.score,
     power: player.power,
+    rollingPower: player.rollingPower,
+    rollEndsAt: player.rollEndsAt,
     effects: player.effects,
-    shieldUntil: player.shieldUntil
+    shieldUntil: player.shieldUntil,
+    bounceUntil: player.bounceUntil,
+    bounceMoveUntil: player.bounceMoveUntil
   }));
 }
 
@@ -631,7 +721,7 @@ function normalizeInputKeys(keys) {
 }
 
 function emptyInput() {
-  return { seq: 0, keys: { up: false, down: false, left: false, right: false }, clientTime: 0 };
+  return { seq: 0, keys: { up: false, down: false, left: false, right: false }, clientTime: 0, usePowerSeq: 0 };
 }
 
 function cornerForIndex(index) {

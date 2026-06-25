@@ -81,6 +81,7 @@ export class SplobGame {
     this.serverTimeRemainingMs = Number(config.durationMs || GAME_SECONDS * 1000);
     this.serverGameOver = null;
     this.serverStarted = false;
+    this.pendingPaintStamps = [];
     this.matchStartAt = Number(config.startAt || 0);
     this.lastPowerShuffleStep = -1;
     this.lastEmergencySecond = null;
@@ -302,28 +303,30 @@ export class SplobGame {
 
   updateAuthoritativeRender(now) {
     this.interpolateServerPlayers(now);
+    this.flushPendingPaintStamps(now);
     if (this.phase === "countdown") {
-      const index = Math.max(0, Math.floor((now - this.countdownAt) / 850));
+      const remaining = Math.max(0, this.matchStartAt - Date.now());
+      const index = remaining > 2550 ? 0 : remaining > 1700 ? 1 : remaining > 850 ? 2 : 3;
       this.overlay.innerHTML = `<div class="countdown">${COUNTDOWN_LABELS[index] || ""}</div><div class="you-cue">YOU</div>`;
       const local = this.localPlayer() || this.players[0];
       if (local) {
         this.overlay.style.setProperty("--you-x", `${(local.x / this.canvas.width) * 100}%`);
         this.overlay.style.setProperty("--you-y", `${(local.y / this.canvas.height) * 100}%`);
       }
-      if (index >= COUNTDOWN_LABELS.length || Date.now() >= this.matchStartAt) {
+      if (Date.now() >= this.matchStartAt) {
         this.overlay.innerHTML = "";
         this.phase = "playing";
         this.serverStarted = true;
         this.lastEmergencySecond = null;
       }
       this.hud.timer.textContent = formatTime(Math.ceil(this.serverTimeRemainingMs / 1000));
-      this.updateAuthoritativePowerHud();
+      this.updatePowerSlot(now);
       return;
     }
     if (this.phase !== "playing") return;
     const secondsLeft = Math.max(0, Math.ceil(this.serverTimeRemainingMs / 1000));
     this.hud.timer.textContent = formatTime(secondsLeft);
-    this.updateAuthoritativePowerHud();
+    this.updatePowerSlot(now);
     if (secondsLeft > 0 && secondsLeft <= 5 && secondsLeft !== this.lastEmergencySecond) {
       this.lastEmergencySecond = secondsLeft;
       Sound.play("countdown", secondsLeft);
@@ -357,11 +360,6 @@ export class SplobGame {
       }
       player.coverage = typeof player.targetScore === "number" ? player.targetScore : player.coverage;
     }
-  }
-
-  updateAuthoritativePowerHud() {
-    const local = this.localPlayer() || this.players[0];
-    this.setPowerBox(local?.power, false);
   }
 
   updatePowerSlot(now) {
@@ -1444,9 +1442,30 @@ export class SplobGame {
       player.targetVy = Number(item.vy || 0);
       player.targetAngle = Number(item.angle || 0);
       player.targetScore = Number(item.score || 0);
+      const previousPower = player.power?.id || null;
+      const previousRolling = player.rollingPower?.id || null;
+      const previousBounceUntil = player.bounceUntil || 0;
       player.power = powerById(item.power);
+      player.rollingPower = powerById(item.rollingPower);
+      player.rollEndsAt = localExpiryTime(item.rollEndsAt);
       player.effects = localEffectTimes(item.effects || {});
       player.shieldUntil = localExpiryTime(item.shieldUntil);
+      player.bounceUntil = localExpiryTime(item.bounceUntil);
+      player.bounceMoveUntil = localExpiryTime(item.bounceMoveUntil);
+      if (player.local && !previousRolling && player.rollingPower) {
+        this.lastPowerShuffleStep = -1;
+        Sound.play("power");
+      }
+      if (player.local && previousRolling && !player.rollingPower && player.power) {
+        this.lastPowerShuffleStep = -1;
+        Sound.play("power");
+      }
+      if (player.local && previousPower && !player.power && !player.rollingPower) {
+        Sound.play(previousPower === "reverse" ? "swishoo" : previousPower === "splat" ? "splat" : "power");
+      }
+      if (player.local && previousBounceUntil <= performance.now() && player.bounceUntil > performance.now()) {
+        Sound.play("thud");
+      }
       player.serverFrames = (player.serverFrames || []).concat({
         receivedAt,
         x: player.targetX,
@@ -1468,7 +1487,21 @@ export class SplobGame {
 
   applyPaintBatch(batch) {
     if (!this.authoritative || !batch?.stamps?.length) return;
-    for (const stamp of batch.stamps) this.drawServerPaintStamp(stamp);
+    const receivedAt = performance.now();
+    this.pendingPaintStamps.push(...batch.stamps.map((stamp) => ({ ...stamp, receivedAt })));
+  }
+
+  flushPendingPaintStamps(now) {
+    if (!this.pendingPaintStamps.length) return;
+    const ready = [];
+    this.pendingPaintStamps = this.pendingPaintStamps.filter((stamp) => {
+      if (now - stamp.receivedAt >= 110) {
+        ready.push(stamp);
+        return false;
+      }
+      return true;
+    });
+    for (const stamp of ready) this.drawServerPaintStamp(stamp);
   }
 
   drawServerPaintStamp(stamp) {
