@@ -16,6 +16,7 @@ const decelerationPerSecond = accelerationPerSecond * 1.8;
 const wallSpeedRetain = 0.75;
 const bounceMs = 800;
 const bumpGraceMs = 1000;
+const collisionExitGraceMs = 100;
 const bounceSpeedTieTolerance = 8;
 const bounceSpeed = baseSpeed * 1.5;
 const bounceDistance = radius * 0.8;
@@ -101,6 +102,7 @@ export class SplobGame {
     this.splatTintCanvas = document.createElement("canvas");
     this.splatTintCtx = this.splatTintCanvas.getContext("2d");
     this.players = this.createPlayers(config.players || []);
+    this.passThroughCollisionPairs = new Map();
     this.onKeyDown = (event) => this.handleKey(event, true);
     this.onKeyUp = (event) => this.handleKey(event, false);
   }
@@ -578,13 +580,17 @@ export class SplobGame {
       for (let j = i + 1; j < this.players.length; j += 1) {
         const a = this.players[i];
         const b = this.players[j];
-        if (a.deadUntil > now || b.deadUntil > now) continue;
+        if (a.deadUntil > now || b.deadUntil > now) {
+          this.passThroughCollisionPairs.delete(collisionPairKey(a, b));
+          continue;
+        }
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distance = Math.hypot(dx, dy) || 1;
         const angle = Math.atan2(dy, dx);
         const minDistance = blobOutlineRadius(angle, playerSizeMultiplier(a, now)) + blobOutlineRadius(angle + Math.PI, playerSizeMultiplier(b, now));
-        if (distance >= minDistance) continue;
+        const overlapping = distance < minDistance;
+        if (this.shouldPassThroughBlobCollision(a, b, overlapping, now) || !overlapping) continue;
         const nx = dx / distance;
         const ny = dy / distance;
         const push = (minDistance - distance) / 2;
@@ -595,6 +601,28 @@ export class SplobGame {
         this.applyBlobBounce(a, b, nx, ny, now);
       }
     }
+  }
+
+  shouldPassThroughBlobCollision(a, b, overlapping, now) {
+    const key = collisionPairKey(a, b);
+    const record = this.passThroughCollisionPairs.get(key);
+    const bounceInvulnerable = (a.bounceInvulnerableUntil > now && !this.hasBounceImmunity(a, now))
+      || (b.bounceInvulnerableUntil > now && !this.hasBounceImmunity(b, now));
+    if (overlapping) {
+      if (bounceInvulnerable) {
+        this.passThroughCollisionPairs.set(key, { overlapping: true, ignoreUntil: 0 });
+        return true;
+      }
+      if (record?.overlapping || record?.ignoreUntil > now) return true;
+      if (record) this.passThroughCollisionPairs.delete(key);
+      return false;
+    }
+    if (record?.overlapping) {
+      this.passThroughCollisionPairs.set(key, { overlapping: false, ignoreUntil: now + collisionExitGraceMs });
+    } else if (record && record.ignoreUntil <= now) {
+      this.passThroughCollisionPairs.delete(key);
+    }
+    return false;
   }
 
   applyBlobBounce(a, b, nx, ny, now) {
@@ -1950,6 +1978,10 @@ function oppositeTravelDirection(player, fallbackX, fallbackY) {
   if (speed > 8) return { x: -player.vx / speed, y: -player.vy / speed };
   const fallbackLength = Math.hypot(fallbackX, fallbackY) || 1;
   return { x: fallbackX / fallbackLength, y: fallbackY / fallbackLength };
+}
+
+function collisionPairKey(a, b) {
+  return [a.id || a.socketId || a.spawnIndex, b.id || b.socketId || b.spawnIndex].sort().join(":");
 }
 
 function orderedPlaceBands(currentIndex) {

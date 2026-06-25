@@ -43,6 +43,7 @@ const placePowerWeights = [0.7, 0.18, 0.08, 0.04];
 const wallSpeedRetain = 0.75;
 const bounceMs = 800;
 const bumpGraceMs = 1000;
+const collisionExitGraceMs = 100;
 const bounceSpeedTieTolerance = 8;
 const bounceSpeed = 444;
 const bounceDistance = PLAYER_RADIUS * 0.8;
@@ -357,6 +358,7 @@ function createMatch(lobby) {
     ended: false,
     powerUps: [],
     projectiles: [],
+    passThroughCollisionPairs: new Map(),
     nextPowerSpawnAt: now + countdownMs + scaledPowerDelay(lobby.players.length, 1200),
     paintQueue: [],
     scoreGrid: new Uint16Array(SCORE_GRID_WIDTH * SCORE_GRID_HEIGHT),
@@ -528,12 +530,16 @@ function resolveBlobCollisions(match, now) {
     for (let j = i + 1; j < match.players.length; j += 1) {
       const a = match.players[i];
       const b = match.players[j];
-      if (!a.connected || !b.connected || a.deadUntil > now || b.deadUntil > now) continue;
+      if (!a.connected || !b.connected || a.deadUntil > now || b.deadUntil > now) {
+        match.passThroughCollisionPairs.delete(collisionPairKey(a, b));
+        continue;
+      }
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const distance = Math.hypot(dx, dy) || 1;
       const minDistance = PLAYER_RADIUS * 1.55 * (playerSizeMultiplier(a, now) + playerSizeMultiplier(b, now)) * 0.5;
-      if (distance >= minDistance) continue;
+      const overlapping = distance < minDistance;
+      if (shouldPassThroughBlobCollision(match, a, b, overlapping, now) || !overlapping) continue;
       const nx = dx / distance;
       const ny = dy / distance;
       const push = (minDistance - distance) / 2;
@@ -544,6 +550,28 @@ function resolveBlobCollisions(match, now) {
       applyBlobBounce(match, a, b, nx, ny, now);
     }
   }
+}
+
+function shouldPassThroughBlobCollision(match, a, b, overlapping, now) {
+  const key = collisionPairKey(a, b);
+  const record = match.passThroughCollisionPairs.get(key);
+  const bounceInvulnerable = (a.bounceInvulnerableUntil > now && !hasBounceImmunity(a, now))
+    || (b.bounceInvulnerableUntil > now && !hasBounceImmunity(b, now));
+  if (overlapping) {
+    if (bounceInvulnerable) {
+      match.passThroughCollisionPairs.set(key, { overlapping: true, ignoreUntil: 0 });
+      return true;
+    }
+    if (record?.overlapping || record?.ignoreUntil > now) return true;
+    if (record) match.passThroughCollisionPairs.delete(key);
+    return false;
+  }
+  if (record?.overlapping) {
+    match.passThroughCollisionPairs.set(key, { overlapping: false, ignoreUntil: now + collisionExitGraceMs });
+  } else if (record && record.ignoreUntil <= now) {
+    match.passThroughCollisionPairs.delete(key);
+  }
+  return false;
 }
 
 function applyBlobBounce(match, a, b, nx, ny, now) {
@@ -619,6 +647,10 @@ function oppositeTravelDirection(player, fallbackX, fallbackY) {
   if (speed > 8) return { x: -player.vx / speed, y: -player.vy / speed };
   const fallbackLength = Math.hypot(fallbackX, fallbackY) || 1;
   return { x: fallbackX / fallbackLength, y: fallbackY / fallbackLength };
+}
+
+function collisionPairKey(a, b) {
+  return [a.id || a.socketId || a.spawnIndex, b.id || b.socketId || b.spawnIndex].sort().join(":");
 }
 
 function spawnPowerUp(match, now) {
