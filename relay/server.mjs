@@ -997,7 +997,7 @@ function applyStampCircleToScoreGrid(match, stamp) {
       if (previous === ownerIndex) continue;
       if (previous > 0 && ownerIndex > 0) {
         const previousPlayer = match.players[previous - 1];
-        if (previousPlayer && previousPlayer.id !== stamp.playerId && previousPlayer.effects.fartInvulnerableUntil <= now) {
+        if (previousPlayer && previousPlayer.id !== stamp.playerId && Number(previousPlayer.effects.fartInvulnerableUntil || 0) <= now) {
           previousPlayer.fartCharge = Math.min(1, (previousPlayer.fartCharge || 0) + 1 / fartChargeCells);
         }
       }
