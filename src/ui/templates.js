@@ -1,7 +1,7 @@
 import { COLOR_ORDER, PLAYER_COLORS, POWER_UPS } from "../config.js";
 import { escapeHtml, fittedTextStyle } from "../utils/html.js";
 
-const APP_VERSION = "0.6.1";
+const APP_VERSION = "0.7.0";
 
 const assetButtons = {
   "Singleplayer": "/assets/ui/singleplayer.png",
@@ -126,7 +126,10 @@ export function renderGame(state) {
       </section>
       ${showDebug ? debugPanel() : ""}
       <button class="button button-small button-secondary leave-game" data-action="leaveGame">Leave</button>
-      <button class="power-box" id="powerBox" type="button" aria-label="Use power-up"></button>
+      <div class="power-stack">
+        <button class="power-box" id="powerBox" type="button" aria-label="Use power-up"></button>
+        <div class="fart-meter" id="fartMeter" aria-label="Fart meter"><span></span></div>
+      </div>
       ${state.modal ? modal(state.modal) : ""}
     </main>
   `;

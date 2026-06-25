@@ -32,6 +32,9 @@ const bananaProjectileWidth = 22;
 const spikyProjectileRadius = 45;
 const spikyProjectileSpikeRadius = spikyProjectileRadius * 1.28;
 const maxPaintTrailDistance = radius * 3;
+const fartChargeSamples = 24000;
+const fartCloudRadius = radius * 1.5;
+const fartDebuffMs = 5000;
 const suddenDeathPowerSpawnMultiplier = 10;
 const whiteRainColor = "#fffdf4";
 const powerBallColors = ["#00b7e8", "#ec159b", "#f4d12f", "#26c95f"];
@@ -186,6 +189,8 @@ export class SplobGame {
       bounceVx: 0,
       bounceVy: 0,
       power: null,
+      fartCharge: 0,
+      fartCloudUntil: 0,
       rollingPower: null,
       rollEndsAt: 0,
       effects: {},
@@ -252,7 +257,7 @@ export class SplobGame {
   }
 
   handleKey(event, down) {
-    if (["KeyW", "KeyA", "KeyS", "KeyD", "Space"].includes(event.code)) event.preventDefault();
+    if (["KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight"].includes(event.code)) event.preventDefault();
     if (down) this.keys.add(event.code);
     else this.keys.delete(event.code);
     const local = this.localPlayer();
@@ -264,6 +269,15 @@ export class SplobGame {
       const at = performance.now();
       this.usePower(local, at);
       if (this.multiplayer) this.hooks.onInput?.({ type: "input", keys: this.sortedKeys(), usePower: true, matchTime: this.matchTime(at) });
+    }
+    if (down && (event.code === "ShiftLeft" || event.code === "ShiftRight") && local) {
+      if (this.authoritative) {
+        this.hooks.onInput?.({ type: "input", keys: this.inputKeys(), useFart: true, matchTime: this.matchTime(performance.now()) });
+        return;
+      }
+      const at = performance.now();
+      this.useFart(local, at);
+      if (this.multiplayer) this.hooks.onInput?.({ type: "input", keys: this.sortedKeys(), useFart: true, matchTime: this.matchTime(at) });
     }
     this.sendInputIfChanged(false);
   }
@@ -503,12 +517,20 @@ export class SplobGame {
         Sound.play("shuffle");
       }
     }
+    this.updateFartMeter(local);
   }
 
   setPowerBox(power, shuffling) {
     if (!this.hud.power) return;
     this.hud.power.classList.toggle("shuffling", Boolean(shuffling && power));
     this.hud.power.innerHTML = power ? `<img src="${power.iconSrc}" alt="${power.name}" draggable="false" />` : "";
+  }
+
+  updateFartMeter(player) {
+    if (!this.hud.fart) return;
+    const charge = Math.max(0, Math.min(1, Number(player?.fartCharge || 0)));
+    this.hud.fart.style.setProperty("--fart-fill", `${charge * 100}%`);
+    this.hud.fart.classList.toggle("ready", charge >= 1);
   }
 
   resolveRollingPowers(now) {
@@ -570,7 +592,14 @@ export class SplobGame {
         player.inputUsePowerAt = 0;
         this.usePower(player, usePowerAt);
       }
+      if (player.remote && player.inputUseFart) {
+        const useFartAt = player.inputUseFartAt || now;
+        player.inputUseFart = false;
+        player.inputUseFartAt = 0;
+        this.useFart(player, useFartAt);
+      }
       if (player.ai && player.power && this.random() < 0.05) this.usePower(player, now);
+      if (player.ai && player.fartCharge >= 1 && this.random() < 0.012) this.useFart(player, now);
     }
     this.resolveBlobCollisions(now);
   }
@@ -750,6 +779,7 @@ export class SplobGame {
   }
 
   paintAt(player, size = radius) {
+    this.creditOverwrittenPaint(player, size);
     const color = PLAYER_COLORS[player.color].paint;
     this.paintCtx.save();
     this.paintCtx.globalCompositeOperation = "source-over";
@@ -758,6 +788,30 @@ export class SplobGame {
     this.paintCtx.arc(player.x, player.y, size, 0, Math.PI * 2);
     this.paintCtx.fill();
     this.paintCtx.restore();
+  }
+
+  creditOverwrittenPaint(player, size) {
+    const step = 12;
+    const counts = Object.fromEntries(COLOR_ORDER.map((color) => [color, 0]));
+    const minX = Math.max(0, Math.floor(player.x - size));
+    const maxX = Math.min(this.paint.width - 1, Math.ceil(player.x + size));
+    const minY = Math.max(0, Math.floor(player.y - size));
+    const maxY = Math.min(this.paint.height - 1, Math.ceil(player.y + size));
+    for (let y = minY; y <= maxY; y += step) {
+      for (let x = minX; x <= maxX; x += step) {
+        if ((x - player.x) ** 2 + (y - player.y) ** 2 > size ** 2) continue;
+        const color = this.colorAt(x, y);
+        if (color && color !== player.color) counts[color] += 1;
+      }
+    }
+    for (const [color, count] of Object.entries(counts)) {
+      if (!count) continue;
+      this.players
+        .filter((candidate) => candidate.color === color)
+        .forEach((victim) => {
+          victim.fartCharge = Math.min(1, (victim.fartCharge || 0) + count / fartChargeSamples);
+        });
+    }
   }
 
   colorAt(x, y) {
@@ -853,6 +907,23 @@ export class SplobGame {
       this.launchSuddenDeathBonusProjectile(player, power.id, now);
     }
     if (power.id !== "reverse") Sound.play(power.id === "splat" ? "splat" : "power");
+  }
+
+  useFart(player, now = performance.now()) {
+    if (this.phase !== "playing" || player.deadUntil > now || (player.fartCharge || 0) < 1) return;
+    player.fartCharge = 0;
+    player.fartCloudUntil = now + 650;
+    player.effects.boostUntil = now + this.powerDuration(5000);
+    player.effects.bounceImmuneUntil = now + this.powerDuration(5000);
+    this.players
+      .filter((target) => target.id !== player.id && target.deadUntil <= now && Math.hypot(target.x - player.x, target.y - player.y) <= fartCloudRadius)
+      .forEach((target) => {
+        target.effects.bananaSlowUntil = now + this.powerDuration(fartDebuffMs);
+        target.effects.spinUntil = now + this.powerDuration(fartDebuffMs);
+        target.effects.fartInvulnerableUntil = now + this.powerDuration(fartDebuffMs);
+        target.bounceInvulnerableUntil = Math.max(target.bounceInvulnerableUntil || 0, now + this.powerDuration(fartDebuffMs));
+      });
+    Sound.play("power");
   }
 
   powerDuration(ms) {
@@ -969,7 +1040,7 @@ export class SplobGame {
       }
       if (projectile.type === "paintball") return now - projectile.born < 5000;
       const target = this.players.find((player) => player.id !== projectile.owner && projectileHitsPlayer(projectile, player, now));
-      if (!target || target.shieldUntil > now) return true;
+      if (!target || target.shieldUntil > now || target.effects.fartInvulnerableUntil > now) return true;
       if (projectile.type === "freeze") {
         target.effects.freezeUntil = now + 5000;
         target.vx = 0;
@@ -988,6 +1059,7 @@ export class SplobGame {
   }
 
   killPlayer(player, now) {
+    if (player.effects.fartInvulnerableUntil > now) return;
     player.deadUntil = now + this.powerDuration(5000);
     player.effects = { splatMessageUntil: now + this.powerDuration(5000) };
     player.power = null;
@@ -1167,6 +1239,8 @@ export class SplobGame {
       player.vx = 0;
       player.vy = 0;
       player.power = null;
+      player.fartCharge = 0;
+      player.fartCloudUntil = 0;
       player.rollingPower = null;
       player.effects = {};
       player.shieldUntil = 0;
@@ -1203,6 +1277,7 @@ export class SplobGame {
     this.drawCanvasTexture();
     this.ctx.drawImage(this.paint, 0, 0);
     this.drawPowerUps(now);
+    this.players.forEach((player) => this.drawFartCloud(player, now));
     this.drawProjectiles(now);
     this.players.forEach((player) => this.drawPlayer(player, now));
     this.drawConfetti(now);
@@ -1410,8 +1485,9 @@ export class SplobGame {
     const slowWiggle = player.effects.slowUntil > now ? Math.sin(now / 45) * 0.08 : 0;
     const bounce = 0;
     const shielded = player.shieldUntil > now;
+    const fartReady = (player.fartCharge || 0) >= 1;
     const bouncing = player.bounceUntil > now && !shielded;
-    const bounceInvulnerable = player.bounceInvulnerableUntil > now && !shielded;
+    const bounceInvulnerable = (player.bounceInvulnerableUntil > now || player.effects.fartInvulnerableUntil > now) && !shielded;
     const frozen = player.effects.freezeUntil > now;
     const immobilisedWiggle = bouncing && now >= player.bounceMoveUntil ? Math.sin(now / 38) * 0.08 : 0;
     this.ctx.save();
@@ -1423,7 +1499,7 @@ export class SplobGame {
     this.ctx.rotate(spin + immobilisedWiggle + slowWiggle);
     if (player.mood === "happy") this.ctx.rotate(Math.sin(now / 90) * 0.18);
     this.ctx.scale(size, size);
-    this.drawBlobShape(color, now, player.effects.messyUntil > now, frozen, bounceInvulnerable);
+    this.drawBlobShape(color, now, player.effects.messyUntil > now, frozen, bounceInvulnerable, fartReady);
     if (shielded) this.drawShield();
     this.drawFace(frozen ? "sad" : bouncing ? "puzzled" : player.mood, false);
     this.ctx.restore();
@@ -1431,13 +1507,17 @@ export class SplobGame {
     if (player.effects.reverseSignalUntil > now) this.drawReverseSignal(player, now);
   }
 
-  drawBlobShape(color, now, messy = false, frozen = false, bounceInvulnerable = false) {
+  drawBlobShape(color, now, messy = false, frozen = false, bounceInvulnerable = false, fartReady = false) {
     const wobble = Math.sin(now / 420) * 0.04;
     const jig = messy ? Math.sin(now / 54) * 0.12 : 0;
     const flashOn = bounceInvulnerable && Math.floor(now / 110) % 2 === 0;
     this.ctx.save();
     this.ctx.lineCap = "round";
     this.ctx.lineJoin = "round";
+    if (fartReady) {
+      this.ctx.shadowColor = "#b7ff68";
+      this.ctx.shadowBlur = 26 + Math.sin(now / 95) * 8;
+    }
 
     this.ctx.globalAlpha = frozen ? 0.74 : 1;
     this.ctx.fillStyle = frozen ? "#8fdfff" : flashOn ? "#fffdf4" : color.paint;
@@ -1486,6 +1566,26 @@ export class SplobGame {
     this.ctx.beginPath();
     this.ctx.ellipse(0, radius * 0.02, bodyHalfWidth + 16, bodyHalfHeight + 18, 0, 0, Math.PI * 2);
     this.ctx.stroke();
+  }
+
+  drawFartCloud(player, now) {
+    if (!player.fartCloudUntil || player.fartCloudUntil <= now) return;
+    const age = 1 - Math.max(0, Math.min(1, (player.fartCloudUntil - now) / 650));
+    this.ctx.save();
+    this.ctx.globalAlpha = (1 - age) * 0.58;
+    this.ctx.fillStyle = "#b7ff68";
+    this.ctx.strokeStyle = "rgba(61, 112, 31, 0.54)";
+    this.ctx.lineWidth = 5;
+    for (let i = 0; i < 9; i += 1) {
+      const angle = (Math.PI * 2 * i) / 9 + now / 340;
+      const distance = fartCloudRadius * (0.18 + age * 0.3);
+      const puff = fartCloudRadius * (0.34 + (i % 3) * 0.05 + age * 0.12);
+      this.ctx.beginPath();
+      this.ctx.arc(player.x + Math.cos(angle) * distance, player.y + Math.sin(angle) * distance, puff, 0, Math.PI * 2);
+      this.ctx.fill();
+      this.ctx.stroke();
+    }
+    this.ctx.restore();
   }
 
   drawBoostSparks(player, color, now) {
@@ -1664,6 +1764,10 @@ export class SplobGame {
       player.inputUsePower = true;
       player.inputUsePowerAt = this.localTimeForMatch(event.matchTime);
     }
+    if (player && !player.local && event.useFart) {
+      player.inputUseFart = true;
+      player.inputUseFartAt = this.localTimeForMatch(event.matchTime);
+    }
   }
 
   sendInputIfChanged(force) {
@@ -1672,7 +1776,7 @@ export class SplobGame {
     const signature = this.authoritative ? JSON.stringify(keys) : keys.join("|");
     if (!force && signature === this.lastInputSignature) return;
     this.lastInputSignature = signature;
-    this.hooks.onInput({ type: "input", keys, usePower: false, matchTime: this.matchTime() });
+    this.hooks.onInput({ type: "input", keys, usePower: false, useFart: false, matchTime: this.matchTime() });
   }
 
   applyServerSnapshot(snapshot) {
@@ -1745,6 +1849,8 @@ export class SplobGame {
       const previousRolling = player.rollingPower?.id || null;
       const previousBounceUntil = player.bounceUntil || 0;
       player.power = powerById(item.power);
+      player.fartCharge = Number(item.fartCharge || 0);
+      player.fartCloudUntil = localExpiryTime(item.fartCloudUntil);
       player.rollingPower = powerById(item.rollingPower);
       player.rollEndsAt = localExpiryTime(item.rollEndsAt);
       player.deadUntil = localExpiryTime(item.deadUntil);
@@ -1872,6 +1978,8 @@ export class SplobGame {
       player.vx = 0;
       player.vy = 0;
       player.power = null;
+      player.fartCharge = 0;
+      player.fartCloudUntil = 0;
       player.rollingPower = null;
       player.effects = {};
       player.shieldUntil = 0;

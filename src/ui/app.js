@@ -284,6 +284,7 @@ export function createApp(root) {
     const hud = {
       timer: root.querySelector("#timerPill"),
       power: root.querySelector("#powerBox"),
+      fart: root.querySelector("#fartMeter"),
       results: root.querySelector("#scorePanel")
     };
     state.game = new SplobGame(canvas, overlay, hud, state.pendingGame, {
@@ -306,6 +307,9 @@ export function createApp(root) {
           });
           if (event.usePower) {
             state.relay?.send({ type: "usePower", seq: state.inputSeq, clientTime: Date.now() });
+          }
+          if (event.useFart) {
+            state.relay?.send({ type: "useFart", seq: state.inputSeq, clientTime: Date.now() });
           }
           return;
         }

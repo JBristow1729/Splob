@@ -680,21 +680,32 @@ button {
   pointer-events: none;
 }
 
-.power-box,
+.power-stack,
 .timer-pill {
   position: absolute;
   top: 1rem;
+}
+
+.power-box,
+.timer-pill {
   border: 4px solid var(--wood-dark);
   background: rgba(255, 249, 234, 0.93);
   box-shadow: var(--shadow);
   pointer-events: auto;
 }
 
-.power-box {
+.power-stack {
   left: 1rem;
+  z-index: 6;
+  width: 11.025rem;
+  display: grid;
+  gap: 0.55rem;
+  pointer-events: none;
+}
+
+.power-box {
   width: 11.025rem;
   height: 11.025rem;
-  z-index: 6;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -708,6 +719,29 @@ button {
     var(--shadow);
   border-radius: var(--radius);
   cursor: pointer;
+}
+
+.fart-meter {
+  width: 100%;
+  height: 0.8rem;
+  padding: 0.12rem;
+  border: 2px solid #2f2f35;
+  border-radius: 999px;
+  background: rgba(255, 249, 234, 0.93);
+  box-shadow: 0 0 0 3px #3d3d44, 0 8px 14px rgba(50, 24, 61, 0.2);
+}
+
+.fart-meter span {
+  display: block;
+  width: var(--fart-fill, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #82eea8, #b7ff68, #fff078);
+  transition: width 120ms linear;
+}
+
+.fart-meter.ready {
+  animation: fart-ready 680ms ease-in-out infinite alternate;
 }
 
 .power-box img {
@@ -970,6 +1004,11 @@ button {
   to { transform: rotate(8deg) scale(1.05); }
 }
 
+@keyframes fart-ready {
+  from { filter: brightness(1); }
+  to { filter: brightness(1.28); }
+}
+
 @media (max-width: 740px) {
   html,
   body,
@@ -1086,9 +1125,14 @@ button {
     touch-action: none;
   }
 
-  .power-box {
+  .power-stack {
     top: max(0.45rem, env(safe-area-inset-top));
     left: 0.45rem;
+    width: 3.45rem;
+    gap: 0.32rem;
+  }
+
+  .power-box {
     width: 3.45rem;
     height: 3.45rem;
     padding: 0.28rem;
@@ -1097,6 +1141,13 @@ button {
       0 0 0 3px #3d3d44,
       inset 0 0 0 2px rgba(255, 255, 255, 0.14),
       0 7px 14px rgba(50, 24, 61, 0.2);
+  }
+
+  .fart-meter {
+    height: 0.5rem;
+    padding: 0.08rem;
+    border-width: 1px;
+    box-shadow: 0 0 0 2px #3d3d44, 0 5px 10px rgba(50, 24, 61, 0.18);
   }
 
   .score-panel {
@@ -1195,11 +1246,14 @@ button {
     max-height: calc(100dvh - 11.9rem);
   }
 
-  .game-screen > .power-box {
+  .game-screen > .power-stack {
     position: static;
     justify-self: center;
     align-self: center;
     width: 6.9rem;
+  }
+
+  .game-screen > .power-stack .power-box {
     height: 6.9rem;
     margin: 0;
   }
@@ -1221,8 +1275,11 @@ button {
     display: none;
   }
 
-  .game-screen > .power-box {
+  .game-screen > .power-stack {
     width: 3.25rem;
+  }
+
+  .game-screen > .power-stack .power-box {
     height: 3.25rem;
   }
 
@@ -1239,8 +1296,11 @@ button {
     max-height: calc(100dvh - 11.25rem);
   }
 
-  .game-screen > .power-box {
+  .game-screen > .power-stack {
     width: 6.9rem;
+  }
+
+  .game-screen > .power-stack .power-box {
     height: 6.9rem;
   }
 }

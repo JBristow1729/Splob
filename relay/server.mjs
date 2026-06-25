@@ -55,6 +55,9 @@ const spikyProjectileRadius = 45;
 const spikyProjectileSpikeRadius = spikyProjectileRadius * 1.28;
 const splatAssetCount = 3;
 const maxPaintTrailDistance = PLAYER_RADIUS * 3;
+const fartChargeCells = 120000;
+const fartCloudRadius = PLAYER_RADIUS * 1.5;
+const fartDebuffMs = 5000;
 
 const server = createServer((req, res) => {
   if (req.url === "/health") {
@@ -113,6 +116,7 @@ function handle(id, message) {
   if (message.type === "ready") return setReady(id, true);
   if (message.type === "input") return receiveInput(id, message);
   if (message.type === "usePower") return receiveUsePower(id, message);
+  if (message.type === "useFart") return receiveUseFart(id, message);
   if (message.type === "debug") return receiveDebug(id, message);
 }
 
@@ -326,9 +330,12 @@ function createMatch(lobby) {
       lastPaintX: spawn.x,
       lastPaintY: spawn.y,
       power: null,
+      fartCharge: 0,
+      fartCloudUntil: 0,
       effects: {},
       shieldUntil: 0,
       lastPowerSeq: 0,
+      lastFartSeq: 0,
       rollingPower: null,
       rollEndsAt: 0,
       deadUntil: 0,
@@ -385,7 +392,8 @@ function receiveInput(id, message) {
     seq: Number(message.seq || 0),
     keys: normalizeInputKeys(message.keys),
     clientTime: Number(message.clientTime || 0),
-    usePowerSeq: previous.usePowerSeq
+    usePowerSeq: previous.usePowerSeq,
+    useFartSeq: previous.useFartSeq
   });
 }
 
@@ -394,6 +402,13 @@ function receiveUsePower(id, message) {
   if (!match || match.ended) return;
   const input = match.inputs.get(id) || emptyInput();
   match.inputs.set(id, { ...input, usePowerSeq: Number(message.seq || 0), clientTime: Number(message.clientTime || 0) });
+}
+
+function receiveUseFart(id, message) {
+  const match = matches.get(clients.get(id)?.matchId);
+  if (!match || match.ended) return;
+  const input = match.inputs.get(id) || emptyInput();
+  match.inputs.set(id, { ...input, useFartSeq: Number(message.seq || 0), clientTime: Number(message.clientTime || 0) });
 }
 
 function receiveDebug(id, message) {
@@ -449,6 +464,7 @@ function tickMatch(matchId) {
     expireEffects(player, now);
     resolveRollingPower(player, now);
     consumePowerUse(match, player, match.inputs.get(player.socketId) || emptyInput(), now);
+    consumeFartUse(match, player, match.inputs.get(player.socketId) || emptyInput(), now);
     if (movePlayer(player, match.inputs.get(player.socketId) || emptyInput(), dt, now)) releaseMessySplat(match, player, now);
     collectPowerUps(match, player, now);
     if (match.tick - player.lastPaintTick >= 1 && (Math.hypot(player.vx, player.vy) > 4 || player.lastPaintTick < 0)) {
@@ -489,13 +505,14 @@ function movePlayer(player, input, dt, now) {
   const keys = input.keys || emptyInput().keys;
   const xAxis = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
   const yAxis = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+  const bananaSlow = player.effects.bananaSlowUntil > now ? 0.3 : 1;
   const slow = player.effects.slowUntil > now ? 0.5 : 1;
   const boost = player.effects.boostUntil > now ? 1.5 : 1;
   const reversed = player.effects.reverseUntil > now;
   const frozen = player.effects.freezeUntil > now;
   const bounceImmune = hasBounceImmunity(player, now);
   if (bounceImmune && player.bounceUntil > now) clearBounce(player);
-  const speedLimit = MAX_MOVE_SPEED * slow * boost;
+  const speedLimit = MAX_MOVE_SPEED * slow * bananaSlow * boost;
   if (frozen) {
     player.vx = 0;
     player.vy = 0;
@@ -730,6 +747,12 @@ function consumePowerUse(match, player, input, now) {
   activatePower(match, player, power, now);
 }
 
+function consumeFartUse(match, player, input, now) {
+  if ((player.fartCharge || 0) < 1 || !input.useFartSeq || input.useFartSeq === player.lastFartSeq) return;
+  player.lastFartSeq = input.useFartSeq;
+  activateFart(match, player, now);
+}
+
 function activatePower(match, player, power, now) {
   const timed = (ms) => powerDuration(match, ms);
   if (power === "boost") {
@@ -769,6 +792,22 @@ function activatePower(match, player, power, now) {
     opponent.vy = 0;
     clearBounce(opponent);
   });
+}
+
+function activateFart(match, player, now) {
+  player.fartCharge = 0;
+  player.fartCloudUntil = now + 650;
+  player.effects.boostUntil = now + powerDuration(match, 5000);
+  player.effects.bounceImmuneUntil = now + powerDuration(match, 5000);
+  for (const target of match.players) {
+    if (target.id === player.id) continue;
+    if (!target.connected || target.deadUntil > now) continue;
+    if (Math.hypot(target.x - player.x, target.y - player.y) > fartCloudRadius) continue;
+    target.effects.bananaSlowUntil = now + powerDuration(match, fartDebuffMs);
+    target.effects.spinUntil = now + powerDuration(match, fartDebuffMs);
+    target.effects.fartInvulnerableUntil = now + powerDuration(match, fartDebuffMs);
+    target.bounceInvulnerableUntil = Math.max(target.bounceInvulnerableUntil || 0, now + powerDuration(match, fartDebuffMs));
+  }
 }
 
 function powerDuration(match, ms) {
@@ -824,7 +863,7 @@ function updateProjectiles(match, now, dt) {
     }
     if (projectile.type === "paintball") return now - projectile.born < 5000;
     const target = match.players.find((player) => player.id !== projectile.owner && projectileHitsPlayer(projectile, player, now));
-    if (!target || target.shieldUntil > now) return true;
+    if (!target || target.shieldUntil > now || target.effects.fartInvulnerableUntil > now) return true;
     if (projectile.type === "banana") {
       target.effects.bananaSlowUntil = now + powerDuration(match, 3000);
       target.effects.spinUntil = now + powerDuration(match, 650);
@@ -854,9 +893,12 @@ function addPaintProjectileStamp(match, projectile, fromX, fromY) {
 }
 
 function killPlayer(player, now, duration = 5000) {
+  if (player.effects.fartInvulnerableUntil > now) return;
   player.deadUntil = now + duration;
   player.effects = { splatMessageUntil: now + duration };
   player.power = null;
+  player.fartCharge = 0;
+  player.fartCloudUntil = 0;
   player.rollingPower = null;
   player.rollEndsAt = 0;
   player.shieldUntil = 0;
@@ -950,6 +992,12 @@ function applyStampCircleToScoreGrid(match, stamp) {
       const index = y * SCORE_GRID_WIDTH + x;
       const previous = match.scoreGrid[index];
       if (previous === ownerIndex) continue;
+      if (previous > 0 && ownerIndex > 0) {
+        const previousPlayer = match.players[previous - 1];
+        if (previousPlayer && previousPlayer.id !== stamp.playerId) {
+          previousPlayer.fartCharge = Math.min(1, (previousPlayer.fartCharge || 0) + 1 / fartChargeCells);
+        }
+      }
       if (previous > 0) {
         const previousPlayer = match.players[previous - 1];
         match.scoreCounts.set(previousPlayer.id, Math.max(0, (match.scoreCounts.get(previousPlayer.id) || 0) - 1));
@@ -1059,6 +1107,8 @@ function beginSuddenDeath(match, standings) {
     player.vy = 0;
     player.score = 0;
     player.power = null;
+    player.fartCharge = 0;
+    player.fartCloudUntil = 0;
     player.rollingPower = null;
     player.rollEndsAt = 0;
     player.deadUntil = 0;
@@ -1089,6 +1139,8 @@ function leaveMatch(socketId) {
   player.vx = 0;
   player.vy = 0;
   player.power = null;
+  player.fartCharge = 0;
+  player.fartCloudUntil = 0;
   player.rollingPower = null;
   match.inputs.delete(socketId);
   match.projectiles = match.projectiles.filter((projectile) => projectile.owner !== player.id);
@@ -1266,6 +1318,8 @@ function serializePlayers(match) {
     connected: player.connected,
     score: player.score,
     power: player.power,
+    fartCharge: player.fartCharge || 0,
+    fartCloudUntil: player.fartCloudUntil || 0,
     rollingPower: player.rollingPower,
     rollEndsAt: player.rollEndsAt,
     deadUntil: player.deadUntil,
@@ -1429,7 +1483,7 @@ function normalizeInputKeys(keys) {
 }
 
 function emptyInput() {
-  return { seq: 0, keys: { up: false, down: false, left: false, right: false }, clientTime: 0, usePowerSeq: 0 };
+  return { seq: 0, keys: { up: false, down: false, left: false, right: false }, clientTime: 0, usePowerSeq: 0, useFartSeq: 0 };
 }
 
 function cornerForIndex(index) {
