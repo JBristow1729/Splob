@@ -254,6 +254,25 @@ export class SplobGame {
     this.sendInputIfChanged(false);
   }
 
+  setTouchKey(code, down) {
+    if (!["KeyW", "KeyA", "KeyS", "KeyD"].includes(code)) return;
+    if (down) this.keys.add(code);
+    else this.keys.delete(code);
+    this.sendInputIfChanged(false);
+  }
+
+  triggerPower() {
+    const local = this.localPlayer();
+    if (!local) return;
+    if (this.authoritative) {
+      this.hooks.onInput?.({ type: "input", keys: this.inputKeys(), usePower: true, matchTime: this.matchTime(performance.now()) });
+      return;
+    }
+    const at = performance.now();
+    this.usePower(local, at);
+    if (this.multiplayer) this.hooks.onInput?.({ type: "input", keys: this.sortedKeys(), usePower: true, matchTime: this.matchTime(at) });
+  }
+
   loop(now) {
     if (!this.running) return;
     const dt = Math.min(0.04, (now - this.last) / 1000 || 0);
@@ -385,6 +404,11 @@ export class SplobGame {
     if (!this.hud.power) return;
     this.hud.power.classList.toggle("shuffling", Boolean(shuffling && power));
     this.hud.power.innerHTML = power ? `<img src="${power.iconSrc}" alt="${power.name}" draggable="false" />` : "";
+    if (this.hud.mobilePower) {
+      this.hud.mobilePower.textContent = power && !shuffling ? power.name : "POWER-UP";
+      this.hud.mobilePower.disabled = !power || Boolean(shuffling);
+      this.hud.mobilePower.classList.toggle("ready", Boolean(power && !shuffling));
+    }
   }
 
   resolveRollingPowers(now) {

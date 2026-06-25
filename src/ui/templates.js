@@ -123,6 +123,15 @@ export function renderGame() {
         <canvas id="gameCanvas"></canvas>
         <div class="game-overlay" id="gameOverlay"></div>
       </section>
+      <section class="mobile-controls" aria-label="Touch controls">
+        <div class="mobile-dpad" aria-label="Movement">
+          <button class="mobile-pad-button mobile-pad-up" data-mobile-key="KeyW" aria-label="Move up">▲</button>
+          <button class="mobile-pad-button mobile-pad-left" data-mobile-key="KeyA" aria-label="Move left">◀</button>
+          <button class="mobile-pad-button mobile-pad-right" data-mobile-key="KeyD" aria-label="Move right">▶</button>
+          <button class="mobile-pad-button mobile-pad-down" data-mobile-key="KeyS" aria-label="Move down">▼</button>
+        </div>
+        <button class="mobile-power-button" id="mobilePowerButton" type="button" disabled>POWER-UP</button>
+      </section>
     </main>
   `;
 }

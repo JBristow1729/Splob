@@ -199,7 +199,12 @@ export function createApp(root) {
   function startCanvasGame() {
     const canvas = root.querySelector("#gameCanvas");
     const overlay = root.querySelector("#gameOverlay");
-    const hud = { timer: root.querySelector("#timerPill"), power: root.querySelector("#powerBox"), results: root.querySelector("#scorePanel") };
+    const hud = {
+      timer: root.querySelector("#timerPill"),
+      power: root.querySelector("#powerBox"),
+      mobilePower: root.querySelector("#mobilePowerButton"),
+      results: root.querySelector("#scorePanel")
+    };
     state.game = new SplobGame(canvas, overlay, hud, state.pendingGame, {
       onAgain: () => startGame(state.pendingGame),
       onMenu: () => go("title"),
@@ -219,7 +224,36 @@ export function createApp(root) {
         state.relay?.send({ type: "game:event", event: { ...event, playerSocketId: state.relay.id } });
       }
     });
+    bindMobileControls();
     state.game.start();
+  }
+
+  function bindMobileControls() {
+    root.querySelectorAll("[data-mobile-key]").forEach((button) => {
+      const key = button.dataset.mobileKey;
+      const release = (event) => {
+        event.preventDefault();
+        button.releasePointerCapture?.(event.pointerId);
+        button.classList.remove("pressed");
+        state.game?.setTouchKey(key, false);
+      };
+      button.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        button.setPointerCapture?.(event.pointerId);
+        button.classList.add("pressed");
+        state.game?.setTouchKey(key, true);
+      });
+      button.addEventListener("pointerup", release);
+      button.addEventListener("pointercancel", release);
+      button.addEventListener("lostpointercapture", () => {
+        button.classList.remove("pressed");
+        state.game?.setTouchKey(key, false);
+      });
+    });
+    root.querySelector("#mobilePowerButton")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      state.game?.triggerPower();
+    });
   }
 
   function startGame(config) {
