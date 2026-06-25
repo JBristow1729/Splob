@@ -32,9 +32,12 @@ const bananaProjectileWidth = 22;
 const spikyProjectileRadius = 45;
 const spikyProjectileSpikeRadius = spikyProjectileRadius * 1.28;
 const maxPaintTrailDistance = radius * 3;
-const fartChargeSamples = 24000;
-const fartCloudRadius = radius * 1.5;
+const fartChargeSamples = 16000;
+const fartCloudRadius = radius * 2;
 const fartDebuffMs = 5000;
+const fartCloudMs = 1200;
+const paintOwnerGridWidth = 160;
+const paintOwnerGridHeight = 90;
 const suddenDeathPowerSpawnMultiplier = 10;
 const whiteRainColor = "#fffdf4";
 const powerBallColors = ["#00b7e8", "#ec159b", "#f4d12f", "#26c95f"];
@@ -102,6 +105,7 @@ export class SplobGame {
     this.positionsInitialized = false;
     this.paint = document.createElement("canvas");
     this.paintCtx = this.paint.getContext("2d", { willReadFrequently: true });
+    this.paintOwners = new Uint8Array(paintOwnerGridWidth * paintOwnerGridHeight);
     this.splatTintCanvas = document.createElement("canvas");
     this.splatTintCtx = this.splatTintCanvas.getContext("2d");
     this.players = this.createPlayers(config.players || []);
@@ -215,6 +219,7 @@ export class SplobGame {
     this.canvas.height = height;
     this.paint.width = width;
     this.paint.height = height;
+    this.paintOwners = new Uint8Array(paintOwnerGridWidth * paintOwnerGridHeight);
     this.paintCtx.drawImage(oldPaint, 0, 0, width, height);
     if (!this.positionsInitialized) {
       this.placePlayersInCorners();
@@ -779,7 +784,7 @@ export class SplobGame {
   }
 
   paintAt(player, size = radius) {
-    this.creditOverwrittenPaint(player, size);
+    this.applyPaintOwnership(player, player.x, player.y, size);
     const color = PLAYER_COLORS[player.color].paint;
     this.paintCtx.save();
     this.paintCtx.globalCompositeOperation = "source-over";
@@ -790,31 +795,46 @@ export class SplobGame {
     this.paintCtx.restore();
   }
 
-  creditOverwrittenPaint(player, size) {
-    const step = 12;
-    const counts = Object.fromEntries(COLOR_ORDER.map((color) => [color, 0]));
-    const minX = Math.max(0, Math.floor(player.x - size));
-    const maxX = Math.min(this.paint.width - 1, Math.ceil(player.x + size));
-    const minY = Math.max(0, Math.floor(player.y - size));
-    const maxY = Math.min(this.paint.height - 1, Math.ceil(player.y + size));
-    for (let y = minY; y <= maxY; y += step) {
-      for (let x = minX; x <= maxX; x += step) {
-        if ((x - player.x) ** 2 + (y - player.y) ** 2 > size ** 2) continue;
-        const color = this.colorAt(x, y);
-        if (color && color !== player.color) counts[color] += 1;
+  applyPaintOwnership(player, x, y, size) {
+    const ownerIndex = COLOR_ORDER.indexOf(player.color) + 1;
+    if (!ownerIndex) return;
+    const cellWidth = this.canvas.width / paintOwnerGridWidth;
+    const cellHeight = this.canvas.height / paintOwnerGridHeight;
+    const minX = Math.max(0, Math.floor((x - size) / cellWidth));
+    const maxX = Math.min(paintOwnerGridWidth - 1, Math.ceil((x + size) / cellWidth));
+    const minY = Math.max(0, Math.floor((y - size) / cellHeight));
+    const maxY = Math.min(paintOwnerGridHeight - 1, Math.ceil((y + size) / cellHeight));
+    const counts = [0, 0, 0, 0, 0];
+    for (let gridY = minY; gridY <= maxY; gridY += 1) {
+      for (let gridX = minX; gridX <= maxX; gridX += 1) {
+        const cx = (gridX + 0.5) * cellWidth;
+        const cy = (gridY + 0.5) * cellHeight;
+        if ((cx - x) ** 2 + (cy - y) ** 2 > size ** 2) continue;
+        const index = gridY * paintOwnerGridWidth + gridX;
+        const previous = this.paintOwners[index];
+        if (previous === ownerIndex) continue;
+        if (previous > 0) counts[previous] += 1;
+        this.paintOwners[index] = ownerIndex;
       }
     }
-    for (const [color, count] of Object.entries(counts)) {
+    counts.forEach((count, previousOwnerIndex) => {
       if (!count) continue;
+      const color = COLOR_ORDER[previousOwnerIndex - 1];
       this.players
         .filter((candidate) => candidate.color === color)
         .forEach((victim) => {
           victim.fartCharge = Math.min(1, (victim.fartCharge || 0) + count / fartChargeSamples);
         });
-    }
+    });
   }
 
   colorAt(x, y) {
+    if (this.paintOwners?.length && this.canvas.width && this.canvas.height) {
+      const gridX = Math.max(0, Math.min(paintOwnerGridWidth - 1, Math.floor((x / this.canvas.width) * paintOwnerGridWidth)));
+      const gridY = Math.max(0, Math.min(paintOwnerGridHeight - 1, Math.floor((y / this.canvas.height) * paintOwnerGridHeight)));
+      const owner = this.paintOwners[gridY * paintOwnerGridWidth + gridX];
+      if (owner > 0) return COLOR_ORDER[owner - 1] || "";
+    }
     const pixel = this.paintCtx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
     return COLOR_ORDER.find((color) => closeTo(pixel, PLAYER_COLORS[color].paint)) || "";
   }
@@ -912,7 +932,7 @@ export class SplobGame {
   useFart(player, now = performance.now()) {
     if (this.phase !== "playing" || player.deadUntil > now || (player.fartCharge || 0) < 1) return;
     player.fartCharge = 0;
-    player.fartCloudUntil = now + 650;
+    player.fartCloudUntil = now + fartCloudMs;
     player.effects.boostUntil = now + this.powerDuration(5000);
     player.effects.bounceImmuneUntil = now + this.powerDuration(5000);
     this.players
@@ -923,7 +943,7 @@ export class SplobGame {
         target.effects.fartInvulnerableUntil = now + this.powerDuration(fartDebuffMs);
         target.bounceInvulnerableUntil = Math.max(target.bounceInvulnerableUntil || 0, now + this.powerDuration(fartDebuffMs));
       });
-    Sound.play("power");
+    Sound.play("fart");
   }
 
   powerDuration(ms) {
@@ -948,6 +968,7 @@ export class SplobGame {
   }
 
   makeSplat(player, spread, now = performance.now()) {
+    this.applyPaintOwnership(player, player.x, player.y, spread * 0.72);
     this.paintSplatAsset(player.x, player.y, player.color, spread, this.splatVisual());
     this.splats.push({ x: player.x, y: player.y, color: player.color, born: now });
   }
@@ -1014,6 +1035,8 @@ export class SplobGame {
       projectile.x += projectile.vx * dt;
       projectile.y += projectile.vy * dt;
       if (projectile.type === "paintball") {
+        const owner = this.players.find((player) => player.id === projectile.owner);
+        if (owner) this.applyPaintOwnership(owner, projectile.x, projectile.y, projectile.size);
         this.paintCtx.fillStyle = PLAYER_COLORS[projectile.color].paint;
         this.paintCtx.beginPath();
         this.paintCtx.arc(projectile.x, projectile.y, projectile.size, 0, Math.PI * 2);
@@ -1225,6 +1248,7 @@ export class SplobGame {
     this.suddenDeathLoops += 1;
     this.phase = "sudden";
     this.paintCtx.clearRect(0, 0, this.paint.width, this.paint.height);
+    this.paintOwners.fill(0);
     this.splats = [];
     this.confetti = [];
     this.lastWhiteRainAt = 0;
@@ -1570,16 +1594,21 @@ export class SplobGame {
 
   drawFartCloud(player, now) {
     if (!player.fartCloudUntil || player.fartCloudUntil <= now) return;
-    const age = 1 - Math.max(0, Math.min(1, (player.fartCloudUntil - now) / 650));
+    const age = 1 - Math.max(0, Math.min(1, (player.fartCloudUntil - now) / fartCloudMs));
     this.ctx.save();
-    this.ctx.globalAlpha = (1 - age) * 0.58;
+    this.ctx.globalAlpha = Math.max(0, 0.72 - age * 0.42);
     this.ctx.fillStyle = "#b7ff68";
-    this.ctx.strokeStyle = "rgba(61, 112, 31, 0.54)";
+    this.ctx.strokeStyle = "rgba(61, 112, 31, 0.72)";
     this.ctx.lineWidth = 5;
-    for (let i = 0; i < 9; i += 1) {
-      const angle = (Math.PI * 2 * i) / 9 + now / 340;
-      const distance = fartCloudRadius * (0.18 + age * 0.3);
-      const puff = fartCloudRadius * (0.34 + (i % 3) * 0.05 + age * 0.12);
+    this.ctx.beginPath();
+    this.ctx.arc(player.x, player.y, fartCloudRadius * (0.78 + age * 0.22), 0, Math.PI * 2);
+    this.ctx.fill();
+    this.ctx.stroke();
+    this.ctx.globalAlpha = Math.max(0, 0.86 - age * 0.52);
+    for (let i = 0; i < 13; i += 1) {
+      const angle = (Math.PI * 2 * i) / 13 + now / 340;
+      const distance = fartCloudRadius * (0.24 + age * 0.48);
+      const puff = fartCloudRadius * (0.24 + (i % 3) * 0.045 + age * 0.1);
       this.ctx.beginPath();
       this.ctx.arc(player.x + Math.cos(angle) * distance, player.y + Math.sin(angle) * distance, puff, 0, Math.PI * 2);
       this.ctx.fill();
@@ -1968,6 +1997,7 @@ export class SplobGame {
     this.projectiles = [];
     this.pendingPaintStamps = [];
     this.paintCtx.clearRect(0, 0, this.paint.width, this.paint.height);
+    this.paintOwners.fill(0);
     this.placePlayersInCorners();
     this.overlay.innerHTML = `<div class="countdown result-title">Sudden Splob!</div>`;
     if (this.hud.results) this.hud.results.innerHTML = "";

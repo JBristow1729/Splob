@@ -55,9 +55,10 @@ const spikyProjectileRadius = 45;
 const spikyProjectileSpikeRadius = spikyProjectileRadius * 1.28;
 const splatAssetCount = 3;
 const maxPaintTrailDistance = PLAYER_RADIUS * 3;
-const fartChargeCells = 120000;
-const fartCloudRadius = PLAYER_RADIUS * 1.5;
+const fartChargeCells = 80000;
+const fartCloudRadius = PLAYER_RADIUS * 2;
 const fartDebuffMs = 5000;
+const fartCloudMs = 1200;
 
 const server = createServer((req, res) => {
   if (req.url === "/health") {
@@ -796,7 +797,7 @@ function activatePower(match, player, power, now) {
 
 function activateFart(match, player, now) {
   player.fartCharge = 0;
-  player.fartCloudUntil = now + 650;
+  player.fartCloudUntil = now + fartCloudMs;
   player.effects.boostUntil = now + powerDuration(match, 5000);
   player.effects.bounceImmuneUntil = now + powerDuration(match, 5000);
   for (const target of match.players) {
