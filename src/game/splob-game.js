@@ -73,6 +73,7 @@ export class SplobGame {
     this.projectiles = [];
     this.splats = [];
     this.confetti = [];
+    this.pointerTarget = null;
     this.multiplayer = config.mode === "multiplayer";
     this.authoritative = Boolean(config.authoritative);
     this.rng = seededRandom(config.seed || `${Date.now()}-${Math.random()}`);
@@ -254,11 +255,23 @@ export class SplobGame {
     this.sendInputIfChanged(false);
   }
 
-  setTouchKey(code, down) {
-    if (!["KeyW", "KeyA", "KeyS", "KeyD"].includes(code)) return;
-    if (down) this.keys.add(code);
-    else this.keys.delete(code);
+  setPointerTarget(clientX, clientY) {
+    const rect = this.canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const x = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)) * this.canvas.width;
+    const y = Math.min(1, Math.max(0, (clientY - rect.top) / rect.height)) * this.canvas.height;
+    this.pointerTarget = { x, y };
     this.sendInputIfChanged(false);
+  }
+
+  clearPointerTarget() {
+    if (!this.pointerTarget) return;
+    this.pointerTarget = null;
+    this.sendInputIfChanged(false);
+  }
+
+  hasPointerTarget() {
+    return Boolean(this.pointerTarget);
   }
 
   triggerPower() {
@@ -404,11 +417,6 @@ export class SplobGame {
     if (!this.hud.power) return;
     this.hud.power.classList.toggle("shuffling", Boolean(shuffling && power));
     this.hud.power.innerHTML = power ? `<img src="${power.iconSrc}" alt="${power.name}" draggable="false" />` : "";
-    if (this.hud.mobilePower) {
-      this.hud.mobilePower.textContent = power && !shuffling ? power.name : "POWER-UP";
-      this.hud.mobilePower.disabled = !power || Boolean(shuffling);
-      this.hud.mobilePower.classList.toggle("ready", Boolean(power && !shuffling));
-    }
   }
 
   resolveRollingPowers(now) {
@@ -561,9 +569,27 @@ export class SplobGame {
   }
 
   localVector(player, now) {
-    const x = (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0);
-    const y = (this.keys.has("KeyS") ? 1 : 0) - (this.keys.has("KeyW") ? 1 : 0);
+    const keyboard = this.keyboardVector();
+    const pointer = this.pointerVector(player);
+    const input = keyboard.x || keyboard.y ? keyboard : pointer;
+    const { x, y } = input;
     return player.effects.reverseUntil > now ? { x: -x, y: -y } : { x, y };
+  }
+
+  keyboardVector() {
+    return {
+      x: (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0),
+      y: (this.keys.has("KeyS") ? 1 : 0) - (this.keys.has("KeyW") ? 1 : 0)
+    };
+  }
+
+  pointerVector(player) {
+    if (!this.pointerTarget || !player) return { x: 0, y: 0 };
+    const dx = this.pointerTarget.x - player.x;
+    const dy = this.pointerTarget.y - player.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < radius * 0.28) return { x: 0, y: 0 };
+    return { x: dx / distance, y: dy / distance };
   }
 
   remoteVector(player, now) {
@@ -1407,15 +1433,36 @@ export class SplobGame {
   }
 
   sortedKeys() {
-    return [...this.keys].sort();
+    const keys = [];
+    const input = this.inputKeys();
+    if (input.up) keys.push("KeyW");
+    if (input.down) keys.push("KeyS");
+    if (input.left) keys.push("KeyA");
+    if (input.right) keys.push("KeyD");
+    return keys.sort();
   }
 
   inputKeys() {
+    const pointer = this.pointerInputKeys();
     return {
-      up: this.keys.has("KeyW"),
-      down: this.keys.has("KeyS"),
-      left: this.keys.has("KeyA"),
-      right: this.keys.has("KeyD")
+      up: this.keys.has("KeyW") || pointer.up,
+      down: this.keys.has("KeyS") || pointer.down,
+      left: this.keys.has("KeyA") || pointer.left,
+      right: this.keys.has("KeyD") || pointer.right
+    };
+  }
+
+  pointerInputKeys() {
+    const local = this.localPlayer();
+    if (!this.pointerTarget || !local) return { up: false, down: false, left: false, right: false };
+    const dx = this.pointerTarget.x - local.x;
+    const dy = this.pointerTarget.y - local.y;
+    const threshold = radius * 0.28;
+    return {
+      up: dy < -threshold,
+      down: dy > threshold,
+      left: dx < -threshold,
+      right: dx > threshold
     };
   }
 

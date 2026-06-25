@@ -202,7 +202,6 @@ export function createApp(root) {
     const hud = {
       timer: root.querySelector("#timerPill"),
       power: root.querySelector("#powerBox"),
-      mobilePower: root.querySelector("#mobilePowerButton"),
       results: root.querySelector("#scorePanel")
     };
     state.game = new SplobGame(canvas, overlay, hud, state.pendingGame, {
@@ -224,34 +223,35 @@ export function createApp(root) {
         state.relay?.send({ type: "game:event", event: { ...event, playerSocketId: state.relay.id } });
       }
     });
-    bindMobileControls();
+    bindPointerControls(canvas, hud.power);
     state.game.start();
   }
 
-  function bindMobileControls() {
-    root.querySelectorAll("[data-mobile-key]").forEach((button) => {
-      const key = button.dataset.mobileKey;
-      const release = (event) => {
-        event.preventDefault();
-        button.releasePointerCapture?.(event.pointerId);
-        button.classList.remove("pressed");
-        state.game?.setTouchKey(key, false);
-      };
-      button.addEventListener("pointerdown", (event) => {
-        event.preventDefault();
-        button.setPointerCapture?.(event.pointerId);
-        button.classList.add("pressed");
-        state.game?.setTouchKey(key, true);
-      });
-      button.addEventListener("pointerup", release);
-      button.addEventListener("pointercancel", release);
-      button.addEventListener("lostpointercapture", () => {
-        button.classList.remove("pressed");
-        state.game?.setTouchKey(key, false);
-      });
-    });
-    root.querySelector("#mobilePowerButton")?.addEventListener("click", (event) => {
+  function bindPointerControls(canvas, powerBox) {
+    const moveToPointer = (event) => {
       event.preventDefault();
+      state.game?.setPointerTarget(event.clientX, event.clientY);
+    };
+    const releasePointer = (event) => {
+      event.preventDefault();
+      canvas.releasePointerCapture?.(event.pointerId);
+      state.game?.clearPointerTarget();
+    };
+    canvas.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      canvas.setPointerCapture?.(event.pointerId);
+      state.game?.setPointerTarget(event.clientX, event.clientY);
+    });
+    canvas.addEventListener("pointermove", (event) => {
+      if (!state.game?.hasPointerTarget?.()) return;
+      moveToPointer(event);
+    });
+    canvas.addEventListener("pointerup", releasePointer);
+    canvas.addEventListener("pointercancel", releasePointer);
+    canvas.addEventListener("lostpointercapture", () => state.game?.clearPointerTarget());
+    powerBox?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       state.game?.triggerPower();
     });
   }
