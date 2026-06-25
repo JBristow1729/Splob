@@ -44,10 +44,12 @@ const bounceSpeed = 444;
 const bounceDistance = PLAYER_RADIUS * 0.8;
 const projectileSpeed = 1140;
 const paintballProjectileRadius = PLAYER_RADIUS * 0.3;
-const bananaProjectileLength = 75;
-const bananaProjectileWidth = 30;
+const bananaProjectileLength = 42;
+const bananaProjectileWidth = 22;
 const spikyProjectileRadius = 45;
 const spikyProjectileSpikeRadius = spikyProjectileRadius * 1.28;
+const splatAssetCount = 3;
+const maxPaintTrailDistance = PLAYER_RADIUS * 3;
 
 const server = createServer((req, res) => {
   if (req.url === "/health") {
@@ -361,11 +363,13 @@ function tickMatch(matchId) {
     expireEffects(player, now);
     resolveRollingPower(player, now);
     consumePowerUse(match, player, match.inputs.get(player.socketId) || emptyInput(), now);
-    movePlayer(player, match.inputs.get(player.socketId) || emptyInput(), dt, now);
+    if (movePlayer(player, match.inputs.get(player.socketId) || emptyInput(), dt, now)) releaseMessySplat(match, player, now);
     collectPowerUps(match, player, now);
     if (match.tick - player.lastPaintTick >= 1 && (Math.hypot(player.vx, player.vy) > 4 || player.lastPaintTick < 0)) {
-      const fromX = player.lastPaintTick < 0 ? player.x : player.lastPaintX;
-      const fromY = player.lastPaintTick < 0 ? player.y : player.lastPaintY;
+      const trailDistance = Math.hypot(player.x - player.lastPaintX, player.y - player.lastPaintY);
+      const safeTrail = Number.isFinite(trailDistance) && trailDistance <= maxPaintTrailDistance;
+      const fromX = player.lastPaintTick < 0 || !safeTrail ? player.x : player.lastPaintX;
+      const fromY = player.lastPaintTick < 0 || !safeTrail ? player.y : player.lastPaintY;
       player.lastPaintTick = match.tick;
       addPaintStamp(match, player, PLAYER_RADIUS * playerSizeMultiplier(player, now), { fromX: round(fromX), fromY: round(fromY) });
       player.lastPaintX = player.x;
@@ -389,6 +393,9 @@ function respawnPlayer(player) {
   player.vy = 0;
   player.effects = {};
   player.shieldUntil = 0;
+  player.lastPaintTick = -1;
+  player.lastPaintX = player.x;
+  player.lastPaintY = player.y;
   clearBounce(player);
 }
 
@@ -424,10 +431,12 @@ function movePlayer(player, input, dt, now) {
   const nextY = player.y + player.vy * dt;
   const clampedX = clamp(nextX, halfWidth, ARENA_WIDTH - halfWidth);
   const clampedY = clamp(nextY, halfHeight, ARENA_HEIGHT - halfHeight);
+  const hitWall = clampedX !== nextX || clampedY !== nextY;
   if (clampedX !== nextX) player.vx = -player.vx * wallSpeedRetain;
   if (clampedY !== nextY) player.vy = -player.vy * wallSpeedRetain;
   player.x = clampedX;
   player.y = clampedY;
+  return hitWall;
 }
 
 function resolveBlobCollisions(match, now) {
@@ -448,12 +457,12 @@ function resolveBlobCollisions(match, now) {
       a.y = clamp(a.y - ny * push, BODY_HALF_HEIGHT, ARENA_HEIGHT - BODY_HALF_HEIGHT);
       b.x = clamp(b.x + nx * push, BODY_HALF_WIDTH, ARENA_WIDTH - BODY_HALF_WIDTH);
       b.y = clamp(b.y + ny * push, BODY_HALF_HEIGHT, ARENA_HEIGHT - BODY_HALF_HEIGHT);
-      applyBlobBounce(a, b, nx, ny, now);
+      applyBlobBounce(match, a, b, nx, ny, now);
     }
   }
 }
 
-function applyBlobBounce(a, b, nx, ny, now) {
+function applyBlobBounce(match, a, b, nx, ny, now) {
   const aBoosted = hasBounceImmunity(a, now);
   const bBoosted = hasBounceImmunity(b, now);
   const aShielded = hasCollisionGrace(a, now);
@@ -473,6 +482,8 @@ function applyBlobBounce(a, b, nx, ny, now) {
   }
   a.lastCollisionAt = now;
   b.lastCollisionAt = now;
+  releaseMessySplat(match, a, now);
+  releaseMessySplat(match, b, now);
 }
 
 function startBounce(player, dx, dy, now) {
@@ -485,6 +496,9 @@ function startBounce(player, dx, dy, now) {
   player.bounceInvulnerableUntil = now + bumpGraceMs;
   player.vx = 0;
   player.vy = 0;
+  player.lastPaintTick = -1;
+  player.lastPaintX = player.x;
+  player.lastPaintY = player.y;
 }
 
 function clearBounce(player) {
@@ -500,6 +514,12 @@ function hasCollisionGrace(player, now) {
 
 function hasBounceImmunity(player, now) {
   return player.shieldUntil > now || player.effects.bounceImmuneUntil > now;
+}
+
+function releaseMessySplat(match, player, now) {
+  if (!match || !player.effects.messyUntil || player.effects.messyUntil <= now || now - (player.lastMessySplatAt || 0) < 140) return;
+  player.lastMessySplatAt = now;
+  addPaintStamp(match, player, PLAYER_RADIUS * 2.2 * playerSizeMultiplier(player, now), { type: "splat" });
 }
 
 function oppositeTravelDirection(player, fallbackX, fallbackY) {
@@ -716,13 +736,26 @@ function playerSizeMultiplier(player, now) {
 
 function addPaintStamp(match, player, radius, options = {}) {
   const stamp = { playerId: player.id, x: round(player.x), y: round(player.y), radius, color: player.color, tick: match.tick, ...options };
+  if (stamp.type === "splat" && !stamp.splatVisual) stamp.splatVisual = randomSplatVisual();
   applyStampToScoreGrid(match, stamp);
   match.paintQueue.push(stamp);
+}
+
+function randomSplatVisual() {
+  return {
+    imageIndex: Math.floor(Math.random() * splatAssetCount),
+    angle: round(Math.random() * Math.PI * 2, 4),
+    scale: round(1.45 + Math.random() * 0.35, 4)
+  };
 }
 
 function applyStampToScoreGrid(match, stamp) {
   if (typeof stamp.fromX === "number" && typeof stamp.fromY === "number" && stamp.type !== "splat") {
     const distance = Math.hypot(stamp.x - stamp.fromX, stamp.y - stamp.fromY);
+    if (!Number.isFinite(distance) || distance > maxPaintTrailDistance) {
+      applyStampCircleToScoreGrid(match, stamp);
+      return;
+    }
     const steps = Math.max(1, Math.ceil(distance / Math.max(1, stamp.radius * 0.5)));
     for (let step = 0; step <= steps; step += 1) {
       const t = step / steps;

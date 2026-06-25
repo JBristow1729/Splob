@@ -1150,18 +1150,23 @@ button {
 }
 
 @media (max-width: 740px) and (orientation: portrait) {
+  .game-screen {
+    grid-template-rows: minmax(0, auto) minmax(7.4rem, 1fr);
+    align-content: stretch;
+  }
+
   .canvas-frame {
-    width: min(calc(100vw - 1rem), calc((100dvh - 8.7rem) * 16 / 9));
-    max-height: calc(100dvh - 8.7rem);
+    width: min(calc(100vw - 1rem), calc((100dvh - 11.9rem) * 16 / 9));
+    max-height: calc(100dvh - 11.9rem);
   }
 
   .game-screen > .power-box {
     position: static;
     justify-self: center;
-    align-self: start;
-    width: 4.3rem;
-    height: 4.3rem;
-    margin-top: 0.15rem;
+    align-self: center;
+    width: 6.9rem;
+    height: 6.9rem;
+    margin: 0;
   }
 }
 
@@ -1196,8 +1201,13 @@ button {
 
 @media (max-width: 740px) and (orientation: portrait) and (max-height: 620px) {
   .canvas-frame {
-    width: min(calc(100vw - 0.8rem), calc((100dvh - 7.15rem) * 16 / 9));
-    max-height: calc(100dvh - 7.15rem);
+    width: min(calc(100vw - 0.8rem), calc((100dvh - 11.25rem) * 16 / 9));
+    max-height: calc(100dvh - 11.25rem);
+  }
+
+  .game-screen > .power-box {
+    width: 6.9rem;
+    height: 6.9rem;
   }
 }
 

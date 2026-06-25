@@ -25,10 +25,11 @@ const powerRadius = 56;
 const projectileSpeed = 1140;
 const freezeProjectileRadius = 36;
 const paintballProjectileRadius = radius * 0.3;
-const bananaProjectileLength = 75;
-const bananaProjectileWidth = 30;
+const bananaProjectileLength = 42;
+const bananaProjectileWidth = 22;
 const spikyProjectileRadius = 45;
 const spikyProjectileSpikeRadius = spikyProjectileRadius * 1.28;
+const maxPaintTrailDistance = radius * 3;
 const powerBallColors = ["#00b7e8", "#ec159b", "#f4d12f", "#26c95f"];
 const arenaWidth = 1280;
 const arenaHeight = 720;
@@ -341,6 +342,7 @@ export class SplobGame {
 
   updateAuthoritativeRender(now) {
     this.interpolateServerPlayers(now);
+    this.interpolateServerProjectiles(now);
     this.flushPendingPaintStamps(now);
     if (this.phase === "countdown") {
       const remaining = Math.max(0, this.matchStartAt - Date.now());
@@ -452,6 +454,28 @@ export class SplobGame {
         player.y = player.targetY;
       }
       player.coverage = typeof player.targetScore === "number" ? player.targetScore : player.coverage;
+    }
+  }
+
+  interpolateServerProjectiles(now = performance.now()) {
+    for (const projectile of this.projectiles) {
+      const frames = projectile.serverFrames || [];
+      const renderAt = now - 110;
+      while (frames.length > 2 && frames[1].receivedAt <= renderAt) frames.shift();
+      const previous = frames[0];
+      const next = frames[1];
+      if (previous && next && next.receivedAt > previous.receivedAt) {
+        const t = Math.max(0, Math.min(1, (renderAt - previous.receivedAt) / (next.receivedAt - previous.receivedAt)));
+        projectile.x = lerp(previous.x, next.x, t);
+        projectile.y = lerp(previous.y, next.y, t);
+        projectile.vx = lerp(previous.vx, next.vx, t);
+        projectile.vy = lerp(previous.vy, next.vy, t);
+      } else if (previous) {
+        projectile.x += (previous.x - projectile.x) * 0.35;
+        projectile.y += (previous.y - projectile.y) * 0.35;
+        projectile.vx = previous.vx;
+        projectile.vy = previous.vy;
+      }
     }
   }
 
@@ -805,14 +829,23 @@ export class SplobGame {
   }
 
   makeSplat(player, spread, now = performance.now()) {
-    this.paintSplatAsset(player.x, player.y, player.color, spread);
+    this.paintSplatAsset(player.x, player.y, player.color, spread, this.splatVisual());
     this.splats.push({ x: player.x, y: player.y, color: player.color, born: now });
   }
 
-  paintSplatAsset(x, y, playerColor, spread) {
-    const imageIndex = (this.random() * Math.max(1, splatImages.length)) | 0;
-    const size = Math.round(spread * (1.45 + this.random() * 0.35));
-    const angle = this.random() * Math.PI * 2;
+  splatVisual() {
+    return {
+      imageIndex: (this.random() * Math.max(1, splatImages.length)) | 0,
+      angle: this.random() * Math.PI * 2,
+      scale: 1.45 + this.random() * 0.35
+    };
+  }
+
+  paintSplatAsset(x, y, playerColor, spread, visual = this.splatVisual()) {
+    const resolvedVisual = visual || this.splatVisual();
+    const imageIndex = Math.max(0, Math.min(splatImages.length - 1, Number(resolvedVisual.imageIndex || 0)));
+    const size = Math.round(spread * Number(resolvedVisual.scale || 1.6));
+    const angle = Number(resolvedVisual.angle || 0);
     const image = splatImages[imageIndex];
     if (!image || !image.complete || !image.naturalWidth) {
       this.paintCtx.fillStyle = PLAYER_COLORS[playerColor].paint;
@@ -1233,14 +1266,13 @@ export class SplobGame {
         this.ctx.shadowColor = "rgba(47, 32, 38, 0.24)";
         this.ctx.shadowBlur = 12;
         this.ctx.shadowOffsetY = 8;
-        this.ctx.beginPath();
-        this.ctx.ellipse(0, 0, bananaProjectileLength, bananaProjectileWidth, 0.45, 0.2, Math.PI * 1.85);
-        this.ctx.lineCap = "round";
-        this.ctx.stroke();
-        this.ctx.strokeStyle = "#fff1a0";
-        this.ctx.lineWidth = 4;
-        this.ctx.beginPath();
-        this.ctx.ellipse(-8, -5, bananaProjectileLength * 0.62, bananaProjectileWidth * 0.5, 0.45, 0.35, Math.PI * 1.5);
+        this.ctx.rotate((now - item.born) / 85);
+        this.ctx.font = "54px 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText("\u{1F34C}", 0, 0);
+        this.ctx.restore();
+        continue;
       } else if (item.type === "paintball") {
         this.ctx.shadowColor = "rgba(47, 32, 38, 0.22)";
         this.ctx.shadowBlur = 12;
@@ -1299,6 +1331,7 @@ export class SplobGame {
     const bounce = 0;
     const shielded = player.shieldUntil > now;
     const bouncing = player.bounceUntil > now && !shielded;
+    const frozen = player.effects.freezeUntil > now;
     const immobilisedWiggle = bouncing && now >= player.bounceMoveUntil ? Math.sin(now / 38) * 0.08 : 0;
     this.ctx.save();
     this.ctx.fillStyle = "rgba(47, 32, 38, 0.22)";
@@ -1309,23 +1342,24 @@ export class SplobGame {
     this.ctx.rotate(spin + immobilisedWiggle + slowWiggle);
     if (player.mood === "happy") this.ctx.rotate(Math.sin(now / 90) * 0.18);
     this.ctx.scale(size, size);
-    this.drawBlobShape(color, now, player.effects.messyUntil > now);
+    this.drawBlobShape(color, now, player.effects.messyUntil > now, frozen);
     if (shielded) this.drawShield();
-    this.drawFace(bouncing ? "puzzled" : player.mood, false);
+    this.drawFace(frozen ? "sad" : bouncing ? "puzzled" : player.mood, false);
     this.ctx.restore();
     if (player.effects.boostUntil > now) this.drawBoostSparks(player, color, now);
     if (player.effects.reverseSignalUntil > now) this.drawReverseSignal(player, now);
   }
 
-  drawBlobShape(color, now, messy = false) {
+  drawBlobShape(color, now, messy = false, frozen = false) {
     const wobble = Math.sin(now / 420) * 0.04;
     const jig = messy ? Math.sin(now / 54) * 0.12 : 0;
     this.ctx.save();
     this.ctx.lineCap = "round";
     this.ctx.lineJoin = "round";
 
-    this.ctx.fillStyle = color.paint;
-    this.ctx.strokeStyle = color.dark;
+    this.ctx.globalAlpha = frozen ? 0.74 : 1;
+    this.ctx.fillStyle = frozen ? "#8fdfff" : color.paint;
+    this.ctx.strokeStyle = frozen ? "#3d95c4" : color.dark;
     this.ctx.lineWidth = 10;
     this.ctx.beginPath();
     this.ctx.moveTo(-bodyHalfWidth * (1 + jig * 0.08), bodyHalfHeight * 0.26);
@@ -1336,6 +1370,19 @@ export class SplobGame {
     this.ctx.closePath();
     this.ctx.fill();
     this.ctx.stroke();
+    if (frozen) {
+      this.ctx.globalAlpha = 0.22;
+      this.ctx.fillStyle = "#ffffff";
+      for (const [x, y, length, angle] of [[-0.42, -0.4, 0.42, -0.55], [0.18, -0.68, 0.34, 0.4], [0.48, 0.06, 0.3, -0.35]]) {
+        this.ctx.save();
+        this.ctx.translate(radius * x, radius * y);
+        this.ctx.rotate(angle);
+        this.ctx.beginPath();
+        this.ctx.rect(-radius * length * 0.5, -3, radius * length, 6);
+        this.ctx.fill();
+        this.ctx.restore();
+      }
+    }
 
     this.ctx.globalAlpha = 0.2;
     this.ctx.fillStyle = "#ffffff";
@@ -1556,20 +1603,44 @@ export class SplobGame {
       y: Number(power.y || 0),
       born: performance.now() - Math.max(0, Date.now() - Number(power.born || Date.now()))
     }));
-    this.projectiles = (snapshot.projectiles || []).map((projectile) => ({
-      id: projectile.id,
-      type: projectile.type,
-      owner: projectile.owner,
-      color: projectile.color,
-      size: Number(projectile.size || projectileSize(projectile.type)),
-      x: Number(projectile.x || 0),
-      y: Number(projectile.y || 0),
-      vx: Number(projectile.vx || 0),
-      vy: Number(projectile.vy || 0),
-      born: performance.now() - Math.max(0, Date.now() - Number(projectile.born || Date.now()))
-    }));
-    const known = new Map(this.players.map((player) => [player.id, player]));
     const receivedAt = performance.now();
+    const knownProjectiles = new Map(this.projectiles.map((projectile) => [projectile.id, projectile]));
+    const seenProjectiles = new Set();
+    for (const item of snapshot.projectiles || []) {
+      const id = item.id || `${item.owner}-${item.born}`;
+      seenProjectiles.add(id);
+      let projectile = knownProjectiles.get(id);
+      const frame = {
+        receivedAt,
+        x: Number(item.x || 0),
+        y: Number(item.y || 0),
+        vx: Number(item.vx || 0),
+        vy: Number(item.vy || 0)
+      };
+      if (!projectile) {
+        projectile = {
+          id,
+          type: item.type,
+          owner: item.owner,
+          color: item.color,
+          size: Number(item.size || projectileSize(item.type)),
+          x: frame.x,
+          y: frame.y,
+          vx: frame.vx,
+          vy: frame.vy,
+          born: performance.now() - Math.max(0, Date.now() - Number(item.born || Date.now())),
+          serverFrames: []
+        };
+        this.projectiles.push(projectile);
+      }
+      projectile.type = item.type;
+      projectile.owner = item.owner;
+      projectile.color = item.color;
+      projectile.size = Number(item.size || projectileSize(item.type));
+      projectile.serverFrames = (projectile.serverFrames || []).concat(frame).slice(-8);
+    }
+    this.projectiles = this.projectiles.filter((projectile) => seenProjectiles.has(projectile.id));
+    const known = new Map(this.players.map((player) => [player.id, player]));
     for (const item of snapshot.players || []) {
       let player = known.get(item.id);
       if (!player) {
@@ -1653,7 +1724,7 @@ export class SplobGame {
     if (!color) return;
     if (stamp.type === "splat") {
       const playerColor = PLAYER_COLORS[stamp.color] ? stamp.color : this.players.find((player) => player.id === stamp.playerId)?.color;
-      if (playerColor) this.paintSplatAsset(Number(stamp.x || 0), Number(stamp.y || 0), playerColor, Number(stamp.radius || radius * 6));
+      if (playerColor) this.paintSplatAsset(Number(stamp.x || 0), Number(stamp.y || 0), playerColor, Number(stamp.radius || radius * 6), stamp.splatVisual);
       return;
     }
     this.paintCtx.save();
@@ -1664,7 +1735,8 @@ export class SplobGame {
     const size = Number(stamp.radius || radius);
     const fromX = Number(stamp.fromX);
     const fromY = Number(stamp.fromY);
-    if (Number.isFinite(fromX) && Number.isFinite(fromY) && Math.hypot(x - fromX, y - fromY) > 1) {
+    const trailDistance = Math.hypot(x - fromX, y - fromY);
+    if (Number.isFinite(fromX) && Number.isFinite(fromY) && trailDistance > 1 && trailDistance <= maxPaintTrailDistance) {
       this.paintCtx.strokeStyle = color;
       this.paintCtx.lineWidth = size * 2;
       this.paintCtx.lineCap = "round";
