@@ -249,7 +249,7 @@ function createMatch(lobby) {
     durationMs: GAME_SECONDS * 1000,
     ended: false,
     powerUps: [],
-    nextPowerSpawnAt: now + countdownMs + 1200,
+    nextPowerSpawnAt: now + countdownMs + scaledPowerDelay(lobby.players.length, 1200),
     paintQueue: [],
     scoreGrid: new Uint16Array(SCORE_GRID_WIDTH * SCORE_GRID_HEIGHT),
     scoreCounts: new Map(players.map((player) => [player.id, 0])),
@@ -441,16 +441,21 @@ function spawnPowerUp(match, now) {
       born: now
     });
   }
-  match.nextPowerSpawnAt = now + 2500 + Math.random() * 2000;
+  match.nextPowerSpawnAt = now + scaledPowerDelay(match.players.length, 2500 + Math.random() * 2000);
 }
 
 function collectPowerUps(match, player, now) {
-  if (player.power || player.rollingPower) return;
   const hit = match.powerUps.find((power) => Math.hypot(power.x - player.x, power.y - player.y) <= PLAYER_RADIUS + powerRadius);
   if (!hit) return;
   match.powerUps = match.powerUps.filter((power) => power.id !== hit.id);
+  if (player.power || player.rollingPower) return;
   player.rollingPower = powerIds[(Math.random() * powerIds.length) | 0];
   player.rollEndsAt = now + 3000;
+}
+
+function scaledPowerDelay(playerCount, baseDelay) {
+  const scale = playerCount >= 4 ? 1 : playerCount === 3 ? 0.75 : 0.5;
+  return baseDelay / scale;
 }
 
 function resolveRollingPower(player, now) {
