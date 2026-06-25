@@ -321,6 +321,18 @@ export class SplobGame {
     if (this.multiplayer) this.hooks.onInput?.({ type: "input", keys: this.sortedKeys(), usePower: true, matchTime: this.matchTime(at) });
   }
 
+  triggerFart() {
+    const local = this.localPlayer();
+    if (!local) return;
+    if (this.authoritative) {
+      this.hooks.onInput?.({ type: "input", keys: this.inputKeys(), useFart: true, matchTime: this.matchTime(performance.now()) });
+      return;
+    }
+    const at = performance.now();
+    this.useFart(local, at);
+    if (this.multiplayer) this.hooks.onInput?.({ type: "input", keys: this.sortedKeys(), useFart: true, matchTime: this.matchTime(at) });
+  }
+
   loop(now) {
     if (!this.running) return;
     const dt = Math.min(0.04, (now - this.last) / 1000 || 0);

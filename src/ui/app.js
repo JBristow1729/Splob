@@ -316,7 +316,7 @@ export function createApp(root) {
         state.relay?.send({ type: "game:event", event: { ...event, playerSocketId: state.relay.id } });
       }
     });
-    bindPointerControls(canvas, hud.power);
+    bindPointerControls(canvas, hud.power, root.querySelector("#fartButton"));
     bindDebugControls();
     state.game.start();
   }
@@ -353,7 +353,7 @@ export function createApp(root) {
     });
   }
 
-  function bindPointerControls(canvas, powerBox) {
+  function bindPointerControls(canvas, powerBox, fartButton) {
     const moveToPointer = (event) => {
       event.preventDefault();
       state.game?.setPointerTarget(event.clientX, event.clientY);
@@ -379,6 +379,11 @@ export function createApp(root) {
       event.preventDefault();
       event.stopPropagation();
       state.game?.triggerPower();
+    });
+    fartButton?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      state.game?.triggerFart();
     });
   }
 
