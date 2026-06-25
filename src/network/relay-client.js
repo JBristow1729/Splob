@@ -10,6 +10,7 @@ export class RelayClient {
     this.onGameEvent = null;
     this.onJoinError = null;
     this.onKicked = null;
+    this.onGameError = null;
   }
 
   connect() {
@@ -33,10 +34,15 @@ export class RelayClient {
       message.lobby.players = message.lobby.players.map((player) => ({ ...player, local: player.socketId === this.id }));
       this.onLobby?.(message.lobby);
     }
-    if (message.type === "game:start") this.onGameStart?.(message.config);
+    if (message.type === "game:start") {
+      message.config.players = (message.config.players || []).map((player) => ({ ...player, local: player.socketId === this.id }));
+      message.config.authoritative = message.config.hostSocketId === this.id;
+      this.onGameStart?.(message.config);
+    }
     if (message.type === "game:event") this.onGameEvent?.(message.event);
     if (message.type === "join:error") this.onJoinError?.(message.reason);
     if (message.type === "lobby:kicked") this.onKicked?.();
+    if (message.type === "game:error") this.onGameError?.(message.reason);
   }
 
   send(message) {

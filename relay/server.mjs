@@ -41,7 +41,7 @@ function handle(id, message) {
   if (message.type === "lobby:join") return joinLobby(id, message.code, message.player);
   if (message.type === "lobby:update") return updateLobby(id, message.lobby);
   if (message.type === "lobby:kick") return kickPlayer(id, message.playerId);
-  if (message.type === "game:start") return relayToLobby(id, message);
+  if (message.type === "game:start") return startGame(id, message);
   if (message.type === "game:event") return relayToLobby(id, message);
 }
 
@@ -63,7 +63,7 @@ function joinLobby(id, code, player) {
   const lobby = lobbies.get(code);
   if (!lobby || lobby.players.length >= 4) return send(id, { type: "join:error", reason: "not-found" });
   const used = new Set(lobby.players.map((item) => item.color));
-  const color = used.has(player.color) ? ["red", "blue", "green", "yellow"].find((item) => !used.has(item)) : player.color;
+  const color = used.has(player.color) ? ["cyan", "magenta", "yellow", "green"].find((item) => !used.has(item)) : player.color;
   lobby.players.push({ ...player, color, socketId: id, ready: false, local: false });
   clients.get(id).lobbyCode = code;
   broadcastLobby(lobby);
@@ -97,6 +97,25 @@ function kickPlayer(id, playerId) {
   broadcastLobbies();
 }
 
+function startGame(id, message) {
+  const lobby = lobbies.get(clients.get(id)?.lobbyCode);
+  if (!lobby || lobby.hostId !== id) return;
+  if (lobby.players.some((player) => !player.ready)) {
+    send(id, { type: "game:error", reason: "not-ready" });
+    return;
+  }
+  lobby.started = true;
+  lobby.public = false;
+  const config = {
+    ...(message.config || {}),
+    mode: "multiplayer",
+    hostSocketId: id,
+    players: lobby.players.map((player) => ({ ...player, local: false }))
+  };
+  relayToLobby(id, { type: "game:start", config });
+  broadcastLobbies();
+}
+
 function relayToLobby(id, message) {
   const lobby = lobbies.get(clients.get(id)?.lobbyCode);
   if (!lobby) return;
@@ -124,7 +143,7 @@ function broadcastLobbies() {
 
 function publicLobbies() {
   return [...lobbies.values()]
-    .filter((lobby) => lobby.public && lobby.players.length < 4)
+    .filter((lobby) => lobby.public && !lobby.started && lobby.players.length < 4)
     .map((lobby) => ({ code: lobby.code, host: lobby.players[0]?.name || "Host", players: lobby.players.length, capacity: 4 }));
 }
 

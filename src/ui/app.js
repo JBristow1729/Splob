@@ -5,6 +5,7 @@ import { RelayClient } from "../network/relay-client.js";
 import { loadSettings, sanitizeUsername, saveSettings } from "../state/settings.js";
 import {
   answerFriendRequest,
+  addRecentPlayer,
   fetchFriendsAndRecents,
   fetchProfile,
   readCachedProfile,
@@ -144,6 +145,7 @@ export function createApp(root) {
     if (action?.startsWith("removeFriend:")) return friendAction(action.split(":")[1], "remove");
     if (action?.startsWith("acceptFriend:")) return friendAction(action.split(":")[1], "accept");
     if (action?.startsWith("rejectFriend:")) return friendAction(action.split(":")[1], "reject");
+    if (action?.startsWith("challengeFriend:")) return challengeFriend();
     const actions = {
       singleplayer: () => startGame({ mode: "singleplayer", players: localPlayers() }),
       multiplayer: () => go("multiplayer"),
@@ -175,13 +177,16 @@ export function createApp(root) {
     const hud = { timer: root.querySelector("#timerPill"), power: root.querySelector("#powerBox"), results: root.querySelector("#scorePanel") };
     state.game = new SplobGame(canvas, overlay, hud, state.pendingGame, {
       onAgain: () => startGame(state.pendingGame),
-      onMenu: () => go("title")
+      onMenu: () => go("title"),
+      onInput: (event) => state.relay?.send({ type: "game:event", event: { ...event, playerSocketId: state.relay.id } }),
+      onSnapshot: (event) => state.relay?.send({ type: "game:event", event })
     });
     state.game.start();
   }
 
   function startGame(config) {
     state.pendingGame = { ...config, preferredColor: state.settings.preferredColor };
+    recordRecentPlayers(state.pendingGame.players || []);
     state.screen = "game";
     state.modal = "";
     app.render();
@@ -208,8 +213,17 @@ export function createApp(root) {
       else app.render();
     };
     state.relay.onGameStart = (config) => startGame(config);
+    state.relay.onGameEvent = (event) => {
+      if (!state.game) return;
+      if (event?.type === "input") state.game.receiveRemoteInput?.(event);
+      if (event?.type === "snapshot") state.game.applySnapshot?.(event);
+    };
     state.relay.onJoinError = () => {
       state.modal = `<section class="dialog paint-dialog"><h2>No lobby found</h2><p>That game does not exist or is full.</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;
+      app.render();
+    };
+    state.relay.onGameError = () => {
+      state.modal = `<section class="dialog paint-dialog"><h2>Not ready yet</h2><p>Every player needs to ready-up before the match can start.</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;
       app.render();
     };
     state.relay.onKicked = () => {
@@ -225,7 +239,7 @@ export function createApp(root) {
     state.lobby = {
       code: String(Math.floor(1000 + Math.random() * 9000)),
       public: false,
-      players: [{ id: "local", name: username(), color: state.settings.preferredColor, ready: false, local: true }]
+      players: [{ ...localLobbyPlayer(), ready: false, local: true }]
     };
     relay.send({ type: "lobby:create", public: false, player: state.lobby.players[0] });
     go("lobby");
@@ -242,7 +256,17 @@ export function createApp(root) {
   }
 
   function joinLobby(code) {
-    ensureRelay().send({ type: "lobby:join", code, player: { name: username(), color: state.settings.preferredColor } });
+    ensureRelay().send({ type: "lobby:join", code, player: localLobbyPlayer() });
+  }
+
+  function localLobbyPlayer() {
+    return {
+      id: state.profile?.id,
+      profileId: state.profile?.id,
+      hash: state.profile?.hash,
+      name: username(),
+      color: state.settings.preferredColor
+    };
   }
 
   function toggleReady() {
@@ -269,9 +293,17 @@ export function createApp(root) {
 
   function startMultiplayer() {
     if (!state.lobby?.players?.[0]?.local) return;
-    const players = state.lobby.players.map((player) => ({ ...player }));
-    state.relay?.send({ type: "game:start", config: { mode: "multiplayer", players } });
-    startGame({ mode: "multiplayer", players });
+    if (state.lobby.players.some((player) => !player.ready)) {
+      state.modal = `<section class="dialog paint-dialog"><h2>Not ready yet</h2><p>Every player needs to ready-up before the match can start.</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;
+      app.render();
+      return;
+    }
+    state.relay?.send({ type: "game:start", config: { mode: "multiplayer" } });
+  }
+
+  function challengeFriend() {
+    state.modal = "";
+    hostLobby();
   }
 
   function refreshFriends() {
@@ -313,6 +345,13 @@ export function createApp(root) {
       state.modal = friendsDialog(state);
       app.render();
     }
+  }
+
+  function recordRecentPlayers(players) {
+    if (!state.profile?.id || state.pendingGame?.mode !== "multiplayer") return;
+    players
+      .filter((player) => player.profileId && player.profileId !== state.profile.id)
+      .forEach((player) => addRecentPlayer(player.profileId).catch(() => undefined));
   }
 
   app.render();

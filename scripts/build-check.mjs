@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 
 const required = [
   "index.html",
@@ -12,6 +12,8 @@ const required = [
 ];
 
 await Promise.all(required.map((file) => access(file)));
+await writeFile("env.js", `window.SPLOB_RELAY_URL = ${JSON.stringify(process.env.SPLOB_RELAY_URL || "")};\n`);
 const html = await readFile("index.html", "utf8");
 if (!html.includes("/src/main.js")) throw new Error("index.html does not load the app entry.");
+if (!html.includes("/env.js")) throw new Error("index.html does not load generated environment config.");
 console.log("Splob build check passed.");

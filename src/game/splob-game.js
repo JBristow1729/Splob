@@ -71,6 +71,11 @@ export class SplobGame {
     this.projectiles = [];
     this.splats = [];
     this.confetti = [];
+    this.remoteInputs = new Map();
+    this.lastInputSignature = "";
+    this.lastSnapshotAt = 0;
+    this.lastPaintSnapshotAt = 0;
+    this.authoritative = config.mode !== "multiplayer" || config.authoritative !== false;
     this.lastPowerShuffleStep = -1;
     this.lastEmergencySecond = null;
     this.winner = null;
@@ -110,13 +115,25 @@ export class SplobGame {
     const preferred = this.config.preferredColor || "cyan";
     const localColor = COLOR_ORDER.includes(preferred) ? preferred : "cyan";
     const used = new Set();
-    const local = source.find((player) => player.local) || source[0] || {};
-    const players = [{ id: "local", name: local.name || "You", local: true, color: local.color || localColor }];
-    used.add(players[0].color);
-    for (const remote of source.filter((player) => !player.local).slice(0, 3)) {
-      const color = COLOR_ORDER.includes(remote.color) && !used.has(remote.color) ? remote.color : COLOR_ORDER.find((item) => !used.has(item));
-      players.push({ id: remote.id || remote.socketId || crypto.randomUUID(), name: remote.name || "Guest", color, remote: true });
-      used.add(color);
+    const players = [];
+    for (const item of source.slice(0, 4)) {
+      const fallbackColor = item.local ? localColor : COLOR_ORDER.find((color) => !used.has(color));
+      const color = COLOR_ORDER.includes(item.color) && !used.has(item.color) ? item.color : fallbackColor;
+      if (color) used.add(color);
+      players.push({
+        id: item.id || item.socketId || crypto.randomUUID(),
+        socketId: item.socketId,
+        profileId: item.profileId,
+        name: item.name || item.username || (item.local ? "You" : "Guest"),
+        color: color || localColor,
+        local: Boolean(item.local),
+        remote: !item.local && !item.ai,
+        ai: Boolean(item.ai)
+      });
+    }
+    if (!players.length) {
+      players.push({ id: "local", name: "You", local: true, color: localColor });
+      used.add(localColor);
     }
     const aiNames = shuffle(AI_NAMES);
     while (players.length < 4) {
@@ -209,7 +226,12 @@ export class SplobGame {
     if (["KeyW", "KeyA", "KeyS", "KeyD", "Space"].includes(event.code)) event.preventDefault();
     if (down) this.keys.add(event.code);
     else this.keys.delete(event.code);
-    if (down && event.code === "Space") this.usePower(this.players[0]);
+    const local = this.localPlayer();
+    if (down && event.code === "Space" && local) {
+      if (this.authoritative) this.usePower(local);
+      else this.hooks.onInput?.({ keys: [...this.keys], usePower: true });
+    }
+    this.sendInputIfChanged(false);
   }
 
   loop(now) {
@@ -222,11 +244,16 @@ export class SplobGame {
   }
 
   update(now, dt) {
+    if (!this.authoritative) {
+      this.sendInputIfChanged(false);
+      return;
+    }
     if (this.phase === "countdown") {
       const index = Math.floor((now - this.countdownAt) / 850);
       this.overlay.innerHTML = `<div class="countdown">${COUNTDOWN_LABELS[index] || ""}</div><div class="you-cue">YOU</div>`;
-      this.overlay.style.setProperty("--you-x", `${(this.players[0].x / this.canvas.width) * 100}%`);
-      this.overlay.style.setProperty("--you-y", `${(this.players[0].y / this.canvas.height) * 100}%`);
+      const local = this.localPlayer() || this.players[0];
+      this.overlay.style.setProperty("--you-x", `${(local.x / this.canvas.width) * 100}%`);
+      this.overlay.style.setProperty("--you-y", `${(local.y / this.canvas.height) * 100}%`);
       if (index >= COUNTDOWN_LABELS.length) {
         this.overlay.innerHTML = "";
         this.phase = "playing";
@@ -251,11 +278,12 @@ export class SplobGame {
     this.updateProjectiles(now, dt);
     this.updateSplats(now);
     if (Math.floor(now / 500) !== Math.floor((now - dt * 1000) / 500)) this.computeCoverage();
+    this.broadcastSnapshot(now);
   }
 
   updatePowerSlot(now) {
     this.resolveRollingPowers(now);
-    const local = this.players[0];
+    const local = this.localPlayer() || this.players[0];
     const rolling = local.rollingPower;
     const step = Math.floor(now / 110);
     if (rolling) {
@@ -294,7 +322,7 @@ export class SplobGame {
     for (const player of this.players) {
       if (player.deadUntil > now) continue;
       if (player.deadUntil) this.respawnPlayer(player);
-      const input = player.local ? this.localVector(player, now) : this.aiVector(player, now);
+      const input = player.local ? this.localVector(player, now) : player.ai ? this.aiVector(player, now) : this.remoteVector(player, now);
       const bananaSlow = player.effects.bananaSlowUntil > now ? 0.3 : 1;
       const slow = player.effects.slowUntil > now ? 0.5 : 1;
       const boost = player.effects.boostUntil > now ? 1.5 : 1;
@@ -331,6 +359,10 @@ export class SplobGame {
       if (hitWall) this.releaseMessySplat(player, now);
       this.paintAt(player, radius * size);
       this.collectPowerUps(player, now);
+      if (player.remote && player.inputUsePower) {
+        player.inputUsePower = false;
+        this.usePower(player);
+      }
       if (player.ai && player.power && Math.random() < 0.05) this.usePower(player);
     }
     this.resolveBlobCollisions(now);
@@ -424,6 +456,14 @@ export class SplobGame {
   localVector(player, now) {
     const x = (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0);
     const y = (this.keys.has("KeyS") ? 1 : 0) - (this.keys.has("KeyW") ? 1 : 0);
+    return player.effects.reverseUntil > now ? { x: -x, y: -y } : { x, y };
+  }
+
+  remoteVector(player, now) {
+    const input = this.remoteInputs.get(player.socketId || player.id);
+    const keys = new Set(input?.keys || []);
+    const x = (keys.has("KeyD") ? 1 : 0) - (keys.has("KeyA") ? 1 : 0);
+    const y = (keys.has("KeyS") ? 1 : 0) - (keys.has("KeyW") ? 1 : 0);
     return player.effects.reverseUntil > now ? { x: -x, y: -y } : { x, y };
   }
 
@@ -1234,7 +1274,8 @@ export class SplobGame {
   }
 
   drawMiniStatus(now) {
-    const local = this.players[0];
+    const local = this.localPlayer();
+    if (!local) return;
     if (local.effects.splatMessageUntil > now) {
       const left = Math.ceil((local.effects.splatMessageUntil - now) / 1000);
       this.overlay.innerHTML = `<div class="splat-message">You went splat! ${left}</div>`;
@@ -1242,6 +1283,128 @@ export class SplobGame {
       this.overlay.innerHTML = "";
     }
   }
+
+  localPlayer() {
+    return this.players.find((player) => player.local);
+  }
+
+  receiveRemoteInput(event) {
+    if (!this.authoritative || event?.type !== "input" || !event.playerSocketId) return;
+    this.remoteInputs.set(event.playerSocketId, { keys: event.keys || [] });
+    const player = this.players.find((candidate) => candidate.socketId === event.playerSocketId);
+    if (player && event.usePower) player.inputUsePower = true;
+  }
+
+  sendInputIfChanged(force) {
+    if (this.authoritative || !this.hooks.onInput) return;
+    const keys = [...this.keys].sort();
+    const signature = keys.join("|");
+    if (!force && signature === this.lastInputSignature) return;
+    this.lastInputSignature = signature;
+    this.hooks.onInput({ type: "input", keys, usePower: false });
+  }
+
+  broadcastSnapshot(now) {
+    if (!this.hooks.onSnapshot || now - this.lastSnapshotAt < 50) return;
+    const includePaint = now - this.lastPaintSnapshotAt > 250;
+    this.lastSnapshotAt = now;
+    if (includePaint) this.lastPaintSnapshotAt = now;
+    this.computeCoverage();
+    this.hooks.onSnapshot({
+      type: "snapshot",
+      phase: this.phase,
+      timer: this.hud.timer?.textContent || "",
+      overlay: this.overlay.innerHTML,
+      players: this.players.map((player) => serializePlayer(player)),
+      powerUps: this.powerUps.map((power) => ({ ...power })),
+      projectiles: this.projectiles.map((projectile) => ({ ...projectile })),
+      splats: this.splats.map((splat) => ({ ...splat })),
+      paint: includePaint ? this.paint.toDataURL("image/webp", 0.82) : undefined
+    });
+  }
+
+  applySnapshot(snapshot) {
+    if (this.authoritative || snapshot?.type !== "snapshot") return;
+    this.phase = snapshot.phase || this.phase;
+    if (this.hud.timer && snapshot.timer) this.hud.timer.textContent = snapshot.timer;
+    if (typeof snapshot.overlay === "string") {
+      this.overlay.innerHTML = snapshot.overlay;
+      this.overlay.querySelector('[data-game-action="again"]')?.addEventListener("click", () => this.hooks.onAgain?.());
+      this.overlay.querySelector('[data-game-action="menu"]')?.addEventListener("click", () => this.hooks.onMenu?.());
+    }
+    this.mergePlayers(snapshot.players || []);
+    const local = this.localPlayer();
+    if (local) {
+      this.overlay.style.setProperty("--you-x", `${(local.x / this.canvas.width) * 100}%`);
+      this.overlay.style.setProperty("--you-y", `${(local.y / this.canvas.height) * 100}%`);
+    }
+    this.powerUps = (snapshot.powerUps || []).map((power) => ({ ...power }));
+    this.projectiles = (snapshot.projectiles || []).map((projectile) => ({ ...projectile }));
+    this.splats = (snapshot.splats || []).map((splat) => ({ ...splat }));
+    if (snapshot.paint) this.applyPaintSnapshot(snapshot.paint);
+    this.renderSnapshotScoreboard();
+  }
+
+  mergePlayers(players) {
+    const localId = this.localPlayer()?.id;
+    this.players = players.map((incoming, index) => ({
+      ...incoming,
+      local: incoming.id === localId,
+      remote: incoming.id !== localId && !incoming.ai,
+      ai: Boolean(incoming.ai),
+      effects: { ...(incoming.effects || {}) },
+      spawnIndex: typeof incoming.spawnIndex === "number" ? incoming.spawnIndex : index
+    }));
+  }
+
+  applyPaintSnapshot(src) {
+    const image = new Image();
+    image.onload = () => {
+      this.paintCtx.clearRect(0, 0, this.paint.width, this.paint.height);
+      this.paintCtx.drawImage(image, 0, 0, this.paint.width, this.paint.height);
+    };
+    image.src = src;
+  }
+
+  renderSnapshotScoreboard() {
+    if (!this.hud.results || this.phase === "results" || this.phase === "stop") return;
+    this.standings().forEach((player, index) => this.addScoreRow(player, index + 1));
+  }
+}
+
+function serializePlayer(player) {
+  return {
+    id: player.id,
+    socketId: player.socketId,
+    profileId: player.profileId,
+    name: player.name,
+    color: player.color,
+    remote: player.remote,
+    ai: player.ai,
+    x: player.x,
+    y: player.y,
+    vx: player.vx,
+    vy: player.vy,
+    angle: player.angle,
+    lastCollisionAt: player.lastCollisionAt,
+    bounceUntil: player.bounceUntil,
+    bounceMoveUntil: player.bounceMoveUntil,
+    bounceInvulnerableUntil: player.bounceInvulnerableUntil,
+    bounceVx: player.bounceVx,
+    bounceVy: player.bounceVy,
+    power: player.power,
+    rollingPower: player.rollingPower,
+    rollEndsAt: player.rollEndsAt,
+    effects: player.effects,
+    deadUntil: player.deadUntil,
+    spawnIndex: player.spawnIndex,
+    spawnX: player.spawnX,
+    spawnY: player.spawnY,
+    spawnAngle: player.spawnAngle,
+    shieldUntil: player.shieldUntil,
+    mood: player.mood,
+    coverage: player.coverage
+  };
 }
 
 function closeTo(pixel, hex) {
