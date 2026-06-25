@@ -1,7 +1,7 @@
 import { COLOR_ORDER, PLAYER_COLORS, POWER_UPS } from "../config.js";
 import { escapeHtml, fittedTextStyle } from "../utils/html.js";
 
-const APP_VERSION = "0.8.0";
+const APP_VERSION = "0.8.1";
 
 const assetButtons = {
   "Singleplayer": "/assets/ui/singleplayer.png",
