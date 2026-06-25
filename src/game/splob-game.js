@@ -1447,6 +1447,18 @@ export class SplobGame {
       y: Number(power.y || 0),
       born: performance.now() - Math.max(0, Date.now() - Number(power.born || Date.now()))
     }));
+    this.projectiles = (snapshot.projectiles || []).map((projectile) => ({
+      id: projectile.id,
+      type: projectile.type,
+      owner: projectile.owner,
+      color: projectile.color,
+      size: Number(projectile.size || projectileSize(projectile.type)),
+      x: Number(projectile.x || 0),
+      y: Number(projectile.y || 0),
+      vx: Number(projectile.vx || 0),
+      vy: Number(projectile.vy || 0),
+      born: performance.now() - Math.max(0, Date.now() - Number(projectile.born || Date.now()))
+    }));
     const known = new Map(this.players.map((player) => [player.id, player]));
     const receivedAt = performance.now();
     for (const item of snapshot.players || []) {
@@ -1471,6 +1483,7 @@ export class SplobGame {
       player.power = powerById(item.power);
       player.rollingPower = powerById(item.rollingPower);
       player.rollEndsAt = localExpiryTime(item.rollEndsAt);
+      player.deadUntil = localExpiryTime(item.deadUntil);
       player.effects = localEffectTimes(item.effects || {});
       player.shieldUntil = localExpiryTime(item.shieldUntil);
       player.bounceUntil = localExpiryTime(item.bounceUntil);
