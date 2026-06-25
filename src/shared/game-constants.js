@@ -1,6 +1,7 @@
 export const ARENA_WIDTH = 1280;
 export const ARENA_HEIGHT = 720;
 export const GAME_SECONDS = 60;
+export const SUDDEN_DEATH_SECONDS = 15;
 
 export const PLAYER_COLORS = {
   cyan: { name: "Cyan", paint: "#00b7e8", dark: "#08749a", light: "#77e8ff" },

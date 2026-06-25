@@ -18,7 +18,8 @@ import {
   SCORE_GRID_WIDTH,
   SCORE_UPDATE_RATE,
   SERVER_TICK_RATE,
-  SNAPSHOT_RATE
+  SNAPSHOT_RATE,
+  SUDDEN_DEATH_SECONDS
 } from "../src/shared/game-constants.js";
 
 const port = Number(process.env.PORT || 8787);
@@ -27,6 +28,7 @@ const snapshotEvery = Math.max(1, Math.round(SERVER_TICK_RATE / SNAPSHOT_RATE));
 const paintEvery = Math.max(1, Math.round(SERVER_TICK_RATE / PAINT_BATCH_RATE));
 const scoreEvery = Math.max(1, Math.round(SERVER_TICK_RATE / SCORE_UPDATE_RATE));
 const countdownMs = 3400;
+const suddenDeathIntroMs = 2000;
 const powerRadius = 56;
 const maxPowerUps = 5;
 const powerIds = ["boost", "grow", "messy", "splat", "shield", "paintball", "slow", "shrink", "reverse", "freeze", "banana", "spiky"];
@@ -345,6 +347,8 @@ function createMatch(lobby) {
     startsAt: now + countdownMs,
     startedAt: now + countdownMs,
     durationMs: GAME_SECONDS * 1000,
+    suddenDeath: false,
+    suddenDeathLoops: 0,
     timerPaused: false,
     timerPausedAt: 0,
     timerPausedTotal: 0,
@@ -913,12 +917,17 @@ function broadcastScore(match) {
 
 function finishMatch(match) {
   if (match.ended) return;
-  match.ended = true;
-  clearInterval(match.interval);
   flushPaint(match);
   broadcastScore(match);
   updatePlayerScores(match);
   const standings = activePlayers(match).sort((a, b) => (b.score - a.score) || a.spawnIndex - b.spawnIndex);
+  const tied = tiedStandings(standings);
+  if (tied.length > 1) {
+    beginSuddenDeath(match, standings);
+    return;
+  }
+  match.ended = true;
+  clearInterval(match.interval);
   broadcastMatch(match, {
     type: "gameOver",
     winnerPlayerId: standings[0]?.id || null,
@@ -930,6 +939,49 @@ function finishMatch(match) {
     timer: setTimeout(() => resolvePlayAgain(match.id), 30000)
   };
   setTimeout(() => cleanupMatch(match.id), 30000).unref?.();
+}
+
+function tiedStandings(standings) {
+  const topPercent = Math.round((standings[0]?.score || 0) * 100);
+  return standings.filter((player) => Math.round(player.score * 100) === topPercent);
+}
+
+function beginSuddenDeath(match, standings) {
+  const now = Date.now();
+  match.suddenDeath = true;
+  match.suddenDeathLoops += 1;
+  match.startsAt = now + suddenDeathIntroMs + countdownMs;
+  match.startedAt = match.startsAt;
+  match.durationMs = SUDDEN_DEATH_SECONDS * 1000;
+  match.timerPaused = false;
+  match.timerPausedAt = 0;
+  match.timerPausedTotal = 0;
+  match.powerUps = [];
+  match.projectiles = [];
+  match.nextPowerSpawnAt = match.startsAt + scaledPowerDelay(activePlayers(match).length, 1200);
+  for (const player of activePlayers(match)) {
+    player.vx = 0;
+    player.vy = 0;
+    player.power = null;
+    player.rollingPower = null;
+    player.rollEndsAt = 0;
+    player.deadUntil = 0;
+    player.effects = {};
+    player.shieldUntil = 0;
+    player.lastPaintTick = -1;
+    player.lastPaintX = player.x;
+    player.lastPaintY = player.y;
+    clearBounce(player);
+  }
+  broadcastMatch(match, {
+    type: "suddenDeath",
+    serverTick: match.tick,
+    startAt: match.startsAt,
+    durationMs: match.durationMs,
+    loops: match.suddenDeathLoops,
+    tiedPlayerIds: tiedStandings(standings).map((player) => player.id)
+  });
+  broadcastSnapshot(match);
 }
 
 function leaveMatch(socketId) {

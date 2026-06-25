@@ -16,6 +16,7 @@ export class RelayClient {
     this.onSnapshot = null;
     this.onPaintBatch = null;
     this.onScoreUpdate = null;
+    this.onSuddenDeath = null;
     this.onGameOver = null;
     this.onPlayAgainUpdate = null;
     this.onPlayAgainAlone = null;
@@ -109,6 +110,7 @@ export class RelayClient {
     if (message.type === "snapshot") this.onSnapshot?.(message);
     if (message.type === "paintBatch") this.onPaintBatch?.(message);
     if (message.type === "scoreUpdate") this.onScoreUpdate?.(message);
+    if (message.type === "suddenDeath") this.onSuddenDeath?.(message);
     if (message.type === "gameOver") this.onGameOver?.(message);
     if (message.type === "playAgain:update") this.onPlayAgainUpdate?.(message);
     if (message.type === "playAgain:alone") this.onPlayAgainAlone?.(message);

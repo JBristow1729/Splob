@@ -435,6 +435,7 @@ export function createApp(root) {
     state.relay.onSnapshot = (snapshot) => state.game?.applyServerSnapshot?.(snapshot);
     state.relay.onPaintBatch = (batch) => state.game?.applyPaintBatch?.(batch);
     state.relay.onScoreUpdate = (update) => state.game?.applyScoreUpdate?.(update);
+    state.relay.onSuddenDeath = (message) => state.game?.applyServerSuddenDeath?.(message);
     state.relay.onGameOver = (result) => state.game?.applyGameOver?.(result);
     state.relay.onPlayAgainUpdate = (message) => {
       state.playAgainDeadline = message.deadline;

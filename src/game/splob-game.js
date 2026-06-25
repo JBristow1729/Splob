@@ -1,4 +1,4 @@
-import { AI_NAMES, COLOR_ORDER, COUNTDOWN_LABELS, GAME_SECONDS, PLAYER_COLORS, POWER_UPS } from "../config.js";
+import { AI_NAMES, COLOR_ORDER, COUNTDOWN_LABELS, GAME_SECONDS, PLAYER_COLORS, POWER_UPS, SUDDEN_DEATH_SECONDS } from "../config.js";
 import { Sound } from "../audio/sound.js";
 
 const radius = 72;
@@ -318,7 +318,7 @@ export class SplobGame {
         this.overlay.innerHTML = "";
         this.phase = "playing";
         this.startedAt = now;
-        this.roundSeconds = this.suddenDeath ? 15 : GAME_SECONDS;
+        this.roundSeconds = this.suddenDeath ? SUDDEN_DEATH_SECONDS : GAME_SECONDS;
         this.powerSpawnAt = now + 1200;
       }
       return;
@@ -423,7 +423,7 @@ export class SplobGame {
       this.overlay.innerHTML = "";
       this.phase = "playing";
       this.startedAt = now;
-      this.roundSeconds = this.suddenDeath ? 15 : GAME_SECONDS;
+      this.roundSeconds = this.suddenDeath ? SUDDEN_DEATH_SECONDS : GAME_SECONDS;
     }
     this.finish(now);
   }
@@ -1024,7 +1024,8 @@ export class SplobGame {
   }
 
   resolveWinner(standings) {
-    const tied = standings.filter((player) => Math.abs(player.coverage - standings[0].coverage) < 0.001);
+    const topPercent = Math.round((standings[0]?.coverage || 0) * 100);
+    const tied = standings.filter((player) => Math.round(player.coverage * 100) === topPercent);
     if (tied.length > 1) {
       this.beginSuddenDeath();
       return;
@@ -1764,6 +1765,36 @@ export class SplobGame {
         player.targetScore = player.coverage;
       }
     }
+  }
+
+  applyServerSuddenDeath(message = {}) {
+    if (!this.authoritative) return;
+    this.suddenDeath = true;
+    this.suddenDeathLoops = Number(message.loops || this.suddenDeathLoops + 1);
+    this.phase = "sudden";
+    this.matchStartAt = Number(message.startAt || Date.now() + 5400);
+    this.serverTimeRemainingMs = Number(message.durationMs || SUDDEN_DEATH_SECONDS * 1000);
+    this.serverGameOver = null;
+    this.lastEmergencySecond = null;
+    this.powerUps = [];
+    this.projectiles = [];
+    this.pendingPaintStamps = [];
+    this.overlay.innerHTML = `<div class="countdown result-title">Sudden Splob!</div>`;
+    if (this.hud.results) this.hud.results.innerHTML = "";
+    this.players.forEach((player) => {
+      player.mood = "ready";
+      player.vx = 0;
+      player.vy = 0;
+      player.power = null;
+      player.rollingPower = null;
+      player.effects = {};
+      player.shieldUntil = 0;
+      player.serverFrames = [];
+    });
+    setTimeout(() => {
+      if (!this.running || this.phase !== "sudden") return;
+      this.phase = "countdown";
+    }, 2000);
   }
 
   applyGameOver(result) {

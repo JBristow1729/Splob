@@ -1,6 +1,7 @@
 export {
   COLOR_ORDER,
   GAME_SECONDS,
+  SUDDEN_DEATH_SECONDS,
   PLAYER_COLORS
 } from "./shared/game-constants.js";
 
