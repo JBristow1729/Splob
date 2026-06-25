@@ -29,6 +29,7 @@ const paintEvery = Math.max(1, Math.round(SERVER_TICK_RATE / PAINT_BATCH_RATE));
 const scoreEvery = Math.max(1, Math.round(SERVER_TICK_RATE / SCORE_UPDATE_RATE));
 const countdownMs = 3400;
 const suddenDeathIntroMs = 2000;
+const suddenDeathPowerSpawnMultiplier = 10;
 const powerRadius = 56;
 const maxPowerUps = 5;
 const powerIds = ["boost", "grow", "messy", "splat", "shield", "paintball", "slow", "shrink", "reverse", "freeze", "banana", "spiky"];
@@ -360,6 +361,7 @@ function createMatch(lobby) {
     scoreGrid: new Uint16Array(SCORE_GRID_WIDTH * SCORE_GRID_HEIGHT),
     scoreCounts: new Map(players.map((player) => [player.id, 0])),
     paintedCells: 0,
+    nextWhiteRainAt: 0,
     interval: null
   };
 }
@@ -436,6 +438,7 @@ function tickMatch(matchId) {
     return;
   }
   if (now > match.nextPowerSpawnAt) spawnPowerUp(match, now);
+  if (match.suddenDeath && now > match.nextWhiteRainAt) releaseWhiteRain(match, now);
   for (const player of match.players) {
     if (!player.connected) continue;
     if (player.deadUntil > now) continue;
@@ -618,7 +621,8 @@ function spawnPowerUp(match, now) {
       born: now
     });
   }
-  match.nextPowerSpawnAt = now + scaledPowerDelay(match.players.length, 2500 + Math.random() * 2000);
+  const delay = scaledPowerDelay(match.players.length, 2500 + Math.random() * 2000);
+  match.nextPowerSpawnAt = now + (match.suddenDeath ? delay / suddenDeathPowerSpawnMultiplier : delay);
 }
 
 function collectPowerUps(match, player, now) {
@@ -626,6 +630,10 @@ function collectPowerUps(match, player, now) {
   if (!hit) return;
   match.powerUps = match.powerUps.filter((power) => power.id !== hit.id);
   if (player.power || player.rollingPower) return;
+  if (match.suddenDeath) {
+    activatePower(match, player, choosePower(match, player), now);
+    return;
+  }
   player.rollingPower = choosePower(match, player);
   player.rollEndsAt = now + 3000;
 }
@@ -678,22 +686,27 @@ function consumePowerUse(match, player, input, now) {
   player.lastPowerSeq = input.usePowerSeq;
   const power = player.power;
   player.power = null;
+  activatePower(match, player, power, now);
+}
+
+function activatePower(match, player, power, now) {
+  const timed = (ms) => powerDuration(match, ms);
   if (power === "boost") {
-    player.effects.boostUntil = now + 5000;
-    player.effects.bounceImmuneUntil = now + 5000;
+    player.effects.boostUntil = now + timed(5000);
+    player.effects.bounceImmuneUntil = now + timed(5000);
     return;
   }
   if (power === "grow") {
-    player.effects.growUntil = now + 5000;
-    player.effects.bounceImmuneUntil = now + 5000;
+    player.effects.growUntil = now + timed(5000);
+    player.effects.bounceImmuneUntil = now + timed(5000);
     return;
   }
   if (power === "messy") {
-    player.effects.messyUntil = now + 10000;
+    player.effects.messyUntil = now + timed(10000);
     return;
   }
   if (power === "shield") {
-    player.shieldUntil = now + 10000;
+    player.shieldUntil = now + timed(10000);
     return;
   }
   if (power === "splat") {
@@ -702,21 +715,26 @@ function consumePowerUse(match, player, input, now) {
   }
   if (power === "paintball" || power === "banana" || power === "spiky") {
     launchProjectile(match, player, power, now);
+    launchSuddenDeathBonusProjectile(match, player, power, now);
     return;
   }
   const opponents = match.players.filter((opponent) => opponent.id !== player.id && opponent.connected && opponent.shieldUntil <= now);
-  if (power === "slow") opponents.forEach((opponent) => (opponent.effects.slowUntil = now + 5000));
-  if (power === "shrink") opponents.forEach((opponent) => (opponent.effects.shrinkUntil = now + 5000));
-  if (power === "reverse") opponents.forEach((opponent) => (opponent.effects.reverseUntil = now + 5000));
+  if (power === "slow") opponents.forEach((opponent) => (opponent.effects.slowUntil = now + timed(5000)));
+  if (power === "shrink") opponents.forEach((opponent) => (opponent.effects.shrinkUntil = now + timed(5000)));
+  if (power === "reverse") opponents.forEach((opponent) => (opponent.effects.reverseUntil = now + timed(5000)));
   if (power === "freeze") opponents.forEach((opponent) => {
-    opponent.effects.freezeUntil = now + 5000;
+    opponent.effects.freezeUntil = now + timed(5000);
     opponent.vx = 0;
     opponent.vy = 0;
     clearBounce(opponent);
   });
 }
 
-function launchProjectile(match, player, type, now) {
+function powerDuration(match, ms) {
+  return match.suddenDeath ? ms / 2 : ms;
+}
+
+function launchProjectile(match, player, type, now, angle = player.angle) {
   const hitRadius = projectileSize(type);
   match.projectiles.push({
     id: randomUUID(),
@@ -724,14 +742,19 @@ function launchProjectile(match, player, type, now) {
     owner: player.id,
     color: player.color,
     size: hitRadius,
-    x: player.x + Math.cos(player.angle) * (PLAYER_RADIUS + hitRadius),
-    y: player.y + Math.sin(player.angle) * (PLAYER_RADIUS + hitRadius),
-    vx: Math.cos(player.angle) * projectileSpeed,
-    vy: Math.sin(player.angle) * projectileSpeed,
+    x: player.x + Math.cos(angle) * (PLAYER_RADIUS + hitRadius),
+    y: player.y + Math.sin(angle) * (PLAYER_RADIUS + hitRadius),
+    vx: Math.cos(angle) * projectileSpeed,
+    vy: Math.sin(angle) * projectileSpeed,
     born: now,
-    lastPaintX: player.x + Math.cos(player.angle) * (PLAYER_RADIUS + hitRadius),
-    lastPaintY: player.y + Math.sin(player.angle) * (PLAYER_RADIUS + hitRadius)
+    lastPaintX: player.x + Math.cos(angle) * (PLAYER_RADIUS + hitRadius),
+    lastPaintY: player.y + Math.sin(angle) * (PLAYER_RADIUS + hitRadius)
   });
+}
+
+function launchSuddenDeathBonusProjectile(match, player, type, now) {
+  if (!match.suddenDeath) return;
+  launchProjectile(match, player, type, now, Math.random() * Math.PI * 2);
 }
 
 function updateProjectiles(match, now, dt) {
@@ -762,11 +785,11 @@ function updateProjectiles(match, now, dt) {
     const target = match.players.find((player) => player.id !== projectile.owner && projectileHitsPlayer(projectile, player, now));
     if (!target || target.shieldUntil > now) return true;
     if (projectile.type === "banana") {
-      target.effects.bananaSlowUntil = now + 3000;
-      target.effects.spinUntil = now + 650;
+      target.effects.bananaSlowUntil = now + powerDuration(match, 3000);
+      target.effects.spinUntil = now + powerDuration(match, 650);
     } else {
       addPaintStamp(match, target, PLAYER_RADIUS * 2.5, { type: "splat", color: target.color });
-      killPlayer(target, now);
+      killPlayer(target, now, powerDuration(match, 5000));
     }
     return false;
   });
@@ -789,9 +812,9 @@ function addPaintProjectileStamp(match, projectile, fromX, fromY) {
   match.paintQueue.push(stamp);
 }
 
-function killPlayer(player, now) {
-  player.deadUntil = now + 5000;
-  player.effects = { splatMessageUntil: now + 5000 };
+function killPlayer(player, now, duration = 5000) {
+  player.deadUntil = now + duration;
+  player.effects = { splatMessageUntil: now + duration };
   player.power = null;
   player.rollingPower = null;
   player.rollEndsAt = 0;
@@ -819,6 +842,24 @@ function addPaintStamp(match, player, radius, options = {}) {
   if (stamp.type === "splat" && !stamp.splatVisual) stamp.splatVisual = randomSplatVisual();
   applyStampToScoreGrid(match, stamp);
   match.paintQueue.push(stamp);
+}
+
+function releaseWhiteRain(match, now) {
+  match.nextWhiteRainAt = now + 90;
+  const drops = 2 + Math.floor(Math.random() * 3);
+  for (let index = 0; index < drops; index += 1) {
+    const stamp = {
+      playerId: null,
+      neutral: true,
+      x: round(Math.random() * ARENA_WIDTH),
+      y: round(Math.random() * ARENA_HEIGHT),
+      radius: round(10 + Math.random() * 18),
+      color: "white",
+      tick: match.tick
+    };
+    applyStampToScoreGrid(match, stamp);
+    match.paintQueue.push(stamp);
+  }
 }
 
 function randomSplatVisual() {
@@ -851,8 +892,8 @@ function applyStampToScoreGrid(match, stamp) {
 }
 
 function applyStampCircleToScoreGrid(match, stamp) {
-  const ownerIndex = match.players.findIndex((player) => player.id === stamp.playerId) + 1;
-  if (!ownerIndex) return;
+  const ownerIndex = stamp.neutral ? 0 : match.players.findIndex((player) => player.id === stamp.playerId) + 1;
+  if (!stamp.neutral && !ownerIndex) return;
   const cellWidth = ARENA_WIDTH / SCORE_GRID_WIDTH;
   const cellHeight = ARENA_HEIGHT / SCORE_GRID_HEIGHT;
   const minX = clamp(Math.floor((stamp.x - stamp.radius) / cellWidth), 0, SCORE_GRID_WIDTH - 1);
@@ -871,11 +912,12 @@ function applyStampCircleToScoreGrid(match, stamp) {
       if (previous > 0) {
         const previousPlayer = match.players[previous - 1];
         match.scoreCounts.set(previousPlayer.id, Math.max(0, (match.scoreCounts.get(previousPlayer.id) || 0) - 1));
-      } else {
+      } else if (ownerIndex > 0) {
         match.paintedCells += 1;
       }
+      if (previous > 0 && ownerIndex === 0) match.paintedCells = Math.max(0, match.paintedCells - 1);
       match.scoreGrid[index] = ownerIndex;
-      match.scoreCounts.set(stamp.playerId, (match.scoreCounts.get(stamp.playerId) || 0) + 1);
+      if (ownerIndex > 0) match.scoreCounts.set(stamp.playerId, (match.scoreCounts.get(stamp.playerId) || 0) + 1);
     }
   }
   updatePlayerScores(match);
@@ -958,10 +1000,23 @@ function beginSuddenDeath(match, standings) {
   match.timerPausedTotal = 0;
   match.powerUps = [];
   match.projectiles = [];
+  match.paintQueue = [];
+  match.scoreGrid = new Uint16Array(SCORE_GRID_WIDTH * SCORE_GRID_HEIGHT);
+  match.scoreCounts = new Map(match.players.map((player) => [player.id, 0]));
+  match.paintedCells = 0;
   match.nextPowerSpawnAt = match.startsAt + scaledPowerDelay(activePlayers(match).length, 1200);
+  match.nextWhiteRainAt = match.startsAt;
   for (const player of activePlayers(match)) {
+    const spawn = cornerForIndex(player.spawnIndex);
+    player.x = spawn.x;
+    player.y = spawn.y;
+    player.spawnX = spawn.x;
+    player.spawnY = spawn.y;
+    player.spawnAngle = spawn.angle;
+    player.angle = spawn.angle;
     player.vx = 0;
     player.vy = 0;
+    player.score = 0;
     player.power = null;
     player.rollingPower = null;
     player.rollEndsAt = 0;

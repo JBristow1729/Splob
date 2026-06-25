@@ -30,6 +30,8 @@ const bananaProjectileWidth = 22;
 const spikyProjectileRadius = 45;
 const spikyProjectileSpikeRadius = spikyProjectileRadius * 1.28;
 const maxPaintTrailDistance = radius * 3;
+const suddenDeathPowerSpawnMultiplier = 10;
+const whiteRainColor = "#fffdf4";
 const powerBallColors = ["#00b7e8", "#ec159b", "#f4d12f", "#26c95f"];
 const arenaWidth = 1280;
 const arenaHeight = 720;
@@ -87,6 +89,7 @@ export class SplobGame {
     this.matchStartAt = Number(config.startAt || 0);
     this.lastPowerShuffleStep = -1;
     this.lastEmergencySecond = null;
+    this.lastWhiteRainAt = 0;
     this.winner = null;
     this.timerPaused = false;
     this.timerPausedAt = 0;
@@ -334,6 +337,7 @@ export class SplobGame {
     if (secondsLeft <= 0) return this.finish(now);
     this.updatePowerSlot(now);
     if (now > this.powerSpawnAt) this.spawnPowerUp(now);
+    if (this.suddenDeath) this.releaseWhiteRain(now);
     this.updatePlayers(now, dt);
     this.updateProjectiles(now, dt);
     this.updateSplats(now);
@@ -763,42 +767,44 @@ export class SplobGame {
     const power = player.power;
     player.power = null;
     this.signalPowerUse(player, power, now);
+    const timed = (ms) => this.powerDuration(ms);
     if (power.id === "boost") {
-      player.effects.boostUntil = now + 5000;
-      player.effects.bounceImmuneUntil = now + 5000;
+      player.effects.boostUntil = now + timed(5000);
+      player.effects.bounceImmuneUntil = now + timed(5000);
     }
     if (power.id === "grow") {
-      player.effects.growUntil = now + 5000;
-      player.effects.bounceImmuneUntil = now + 5000;
+      player.effects.growUntil = now + timed(5000);
+      player.effects.bounceImmuneUntil = now + timed(5000);
     }
-    if (power.id === "messy") player.effects.messyUntil = now + 10000;
+    if (power.id === "messy") player.effects.messyUntil = now + timed(10000);
     if (power.id === "splat") this.makeSplat(player, radius * 6 * playerSizeMultiplier(player, now), now);
-    if (power.id === "shield") player.shieldUntil = now + 10000;
+    if (power.id === "shield") player.shieldUntil = now + timed(10000);
     if (power.id === "paintball") {
       this.aimAtRandomOpponent(player, now);
       this.launchProjectile(player, power.id, now);
+      this.launchSuddenDeathBonusProjectile(player, power.id, now);
     }
     if (power.id === "slow") {
-      player.effects.bounceImmuneUntil = now + 5000;
+      player.effects.bounceImmuneUntil = now + timed(5000);
       this.opponentsOf(player, now).forEach((opponent) => {
-        opponent.effects.slowUntil = now + 5000;
+        opponent.effects.slowUntil = now + timed(5000);
       });
     }
     if (power.id === "shrink") {
       this.opponentsOf(player, now).forEach((opponent) => {
-        opponent.effects.shrinkUntil = now + 5000;
+        opponent.effects.shrinkUntil = now + timed(5000);
       });
     }
     if (power.id === "reverse") {
-      player.effects.reverseSignalUntil = now + 2000;
+      player.effects.reverseSignalUntil = now + timed(2000);
       this.opponentsOf(player, now).forEach((opponent) => {
-        opponent.effects.reverseUntil = now + 5000;
+        opponent.effects.reverseUntil = now + timed(5000);
       });
       Sound.play("swishoo");
     }
     if (power.id === "freeze") {
       this.opponentsOf(player, now).forEach((opponent) => {
-        opponent.effects.freezeUntil = now + 5000;
+        opponent.effects.freezeUntil = now + timed(5000);
         opponent.vx = 0;
         opponent.vy = 0;
         this.clearBounce(opponent);
@@ -807,8 +813,13 @@ export class SplobGame {
     if (power.id === "banana" || power.id === "spiky") {
       this.aimAtRandomOpponent(player, now);
       this.launchProjectile(player, power.id, now);
+      this.launchSuddenDeathBonusProjectile(player, power.id, now);
     }
     if (power.id !== "reverse") Sound.play(power.id === "splat" ? "splat" : "power");
+  }
+
+  powerDuration(ms) {
+    return this.suddenDeath ? ms / 2 : ms;
   }
 
   signalPowerUse(player, power, now) {
@@ -870,19 +881,24 @@ export class SplobGame {
     this.paintCtx.restore();
   }
 
-  launchProjectile(player, type, now = performance.now()) {
+  launchProjectile(player, type, now = performance.now(), angle = player.angle) {
     const hitRadius = projectileSize(type);
     this.projectiles.push({
       type,
       owner: player.id,
       color: player.color,
       size: hitRadius,
-      x: player.x + Math.cos(player.angle) * (radius + hitRadius),
-      y: player.y + Math.sin(player.angle) * (radius + hitRadius),
-      vx: Math.cos(player.angle) * projectileSpeed,
-      vy: Math.sin(player.angle) * projectileSpeed,
+      x: player.x + Math.cos(angle) * (radius + hitRadius),
+      y: player.y + Math.sin(angle) * (radius + hitRadius),
+      vx: Math.cos(angle) * projectileSpeed,
+      vy: Math.sin(angle) * projectileSpeed,
       born: now
     });
+  }
+
+  launchSuddenDeathBonusProjectile(player, type, now) {
+    if (!this.suddenDeath) return;
+    this.launchProjectile(player, type, now, this.random() * Math.PI * 2);
   }
 
   updateProjectiles(now, dt) {
@@ -923,8 +939,8 @@ export class SplobGame {
         target.vy = 0;
         this.clearBounce(target);
       } else if (projectile.type === "banana") {
-        target.effects.bananaSlowUntil = now + 3000;
-        target.effects.spinUntil = now + 650;
+        target.effects.bananaSlowUntil = now + this.powerDuration(3000);
+        target.effects.spinUntil = now + this.powerDuration(650);
       } else {
         this.makeSplat(target, radius * 2.5, now);
         this.killPlayer(target, now);
@@ -935,8 +951,8 @@ export class SplobGame {
   }
 
   killPlayer(player, now) {
-    player.deadUntil = now + 5000;
-    player.effects = { splatMessageUntil: now + 5000 };
+    player.deadUntil = now + this.powerDuration(5000);
+    player.effects = { splatMessageUntil: now + this.powerDuration(5000) };
     player.power = null;
     player.rollingPower = null;
     player.shieldUntil = 0;
@@ -974,7 +990,25 @@ export class SplobGame {
       });
     }
     const delay = 2500 + this.random() * 2000;
-    this.powerSpawnAt = now + (this.suddenDeath ? delay / 4 : delay);
+    this.powerSpawnAt = now + (this.suddenDeath ? delay / suddenDeathPowerSpawnMultiplier : delay);
+  }
+
+  releaseWhiteRain(now) {
+    if (now - this.lastWhiteRainAt < 90) return;
+    this.lastWhiteRainAt = now;
+    const drops = 2 + Math.floor(this.random() * 3);
+    this.paintCtx.save();
+    this.paintCtx.globalCompositeOperation = "source-over";
+    this.paintCtx.fillStyle = whiteRainColor;
+    for (let index = 0; index < drops; index += 1) {
+      const x = this.random() * this.canvas.width;
+      const y = this.random() * this.canvas.height;
+      const size = 10 + this.random() * 18;
+      this.paintCtx.beginPath();
+      this.paintCtx.arc(x, y, size, 0, Math.PI * 2);
+      this.paintCtx.fill();
+    }
+    this.paintCtx.restore();
   }
 
   computeCoverage() {
@@ -1081,6 +1115,14 @@ export class SplobGame {
     this.suddenDeath = true;
     this.suddenDeathLoops += 1;
     this.phase = "sudden";
+    this.paintCtx.clearRect(0, 0, this.paint.width, this.paint.height);
+    this.splats = [];
+    this.confetti = [];
+    this.lastWhiteRainAt = 0;
+    this.placePlayersInCorners();
+    this.players.forEach((player) => {
+      player.coverage = 0;
+    });
     this.overlay.innerHTML = `<div class="countdown result-title">Sudden Splob!</div>`;
     this.players.forEach((player) => {
       player.mood = "ready";
@@ -1723,7 +1765,7 @@ export class SplobGame {
   }
 
   drawServerPaintStamp(stamp) {
-    const color = PLAYER_COLORS[stamp.color]?.paint || PLAYER_COLORS[this.players.find((player) => player.id === stamp.playerId)?.color]?.paint;
+    const color = stamp.neutral ? whiteRainColor : PLAYER_COLORS[stamp.color]?.paint || PLAYER_COLORS[this.players.find((player) => player.id === stamp.playerId)?.color]?.paint;
     if (!color) return;
     if (stamp.type === "splat") {
       const playerColor = PLAYER_COLORS[stamp.color] ? stamp.color : this.players.find((player) => player.id === stamp.playerId)?.color;
@@ -1779,10 +1821,14 @@ export class SplobGame {
     this.powerUps = [];
     this.projectiles = [];
     this.pendingPaintStamps = [];
+    this.paintCtx.clearRect(0, 0, this.paint.width, this.paint.height);
+    this.placePlayersInCorners();
     this.overlay.innerHTML = `<div class="countdown result-title">Sudden Splob!</div>`;
     if (this.hud.results) this.hud.results.innerHTML = "";
     this.players.forEach((player) => {
       player.mood = "ready";
+      player.coverage = 0;
+      player.targetScore = 0;
       player.vx = 0;
       player.vy = 0;
       player.power = null;
