@@ -57,8 +57,8 @@ const splatAssetCount = 3;
 const maxPaintTrailDistance = PLAYER_RADIUS * 3;
 const fartChargeCells = 80000;
 const fartImpactRadius = PLAYER_RADIUS * 3;
-const fartDebuffMs = 5000;
-const fartSpinMs = fartDebuffMs / 2;
+const fartDebuffMs = 2500;
+const bananaSlowSpeedMultiplier = 0.15;
 const fartCloudMs = 1200;
 
 const server = createServer((req, res) => {
@@ -507,7 +507,7 @@ function movePlayer(player, input, dt, now) {
   const keys = input.keys || emptyInput().keys;
   const xAxis = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
   const yAxis = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
-  const bananaSlow = player.effects.bananaSlowUntil > now ? 0.3 : 1;
+  const bananaSlow = player.effects.bananaSlowUntil > now ? bananaSlowSpeedMultiplier : 1;
   const slow = player.effects.slowUntil > now ? 0.5 : 1;
   const boost = player.effects.boostUntil > now ? 1.5 : 1;
   const reversed = player.effects.reverseUntil > now;
@@ -806,7 +806,7 @@ function activateFart(match, player, now) {
     if (!target.connected || target.deadUntil > now) continue;
     if (Math.hypot(target.x - player.x, target.y - player.y) > fartImpactRadius) continue;
     target.effects.bananaSlowUntil = now + powerDuration(match, fartDebuffMs);
-    target.effects.spinUntil = now + powerDuration(match, fartSpinMs);
+    target.effects.spinUntil = now + powerDuration(match, fartDebuffMs);
     target.effects.fartInvulnerableUntil = now + powerDuration(match, fartDebuffMs);
     target.bounceInvulnerableUntil = Math.max(target.bounceInvulnerableUntil || 0, now + powerDuration(match, fartDebuffMs));
   }
@@ -977,6 +977,7 @@ function applyStampToScoreGrid(match, stamp) {
 }
 
 function applyStampCircleToScoreGrid(match, stamp) {
+  const now = Date.now();
   const ownerIndex = stamp.neutral ? 0 : match.players.findIndex((player) => player.id === stamp.playerId) + 1;
   if (!stamp.neutral && !ownerIndex) return;
   const cellWidth = ARENA_WIDTH / SCORE_GRID_WIDTH;
@@ -996,7 +997,7 @@ function applyStampCircleToScoreGrid(match, stamp) {
       if (previous === ownerIndex) continue;
       if (previous > 0 && ownerIndex > 0) {
         const previousPlayer = match.players[previous - 1];
-        if (previousPlayer && previousPlayer.id !== stamp.playerId) {
+        if (previousPlayer && previousPlayer.id !== stamp.playerId && previousPlayer.effects.fartInvulnerableUntil <= now) {
           previousPlayer.fartCharge = Math.min(1, (previousPlayer.fartCharge || 0) + 1 / fartChargeCells);
         }
       }

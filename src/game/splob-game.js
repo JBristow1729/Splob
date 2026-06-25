@@ -35,8 +35,8 @@ const maxPaintTrailDistance = radius * 3;
 const fartChargeSamples = 16000;
 const fartImpactRadius = radius * 3;
 const fartVisualRadius = fartImpactRadius;
-const fartDebuffMs = 5000;
-const fartSpinMs = fartDebuffMs / 2;
+const fartDebuffMs = 2500;
+const bananaSlowSpeedMultiplier = 0.15;
 const fartCloudMs = 1200;
 const paintOwnerGridWidth = 160;
 const paintOwnerGridHeight = 90;
@@ -197,6 +197,7 @@ export class SplobGame {
       power: null,
       fartCharge: 0,
       fartCloudUntil: 0,
+      aiFartCooldownUntil: 0,
       rollingPower: null,
       rollEndsAt: 0,
       effects: {},
@@ -557,7 +558,7 @@ export class SplobGame {
       if (player.deadUntil > now) continue;
       if (player.deadUntil) this.respawnPlayer(player);
       const input = player.local ? this.localVector(player, now) : player.ai ? this.aiVector(player, now) : this.remoteVector(player, now);
-      const bananaSlow = player.effects.bananaSlowUntil > now ? 0.3 : 1;
+      const bananaSlow = player.effects.bananaSlowUntil > now ? bananaSlowSpeedMultiplier : 1;
       const slow = player.effects.slowUntil > now ? 0.5 : 1;
       const boost = player.effects.boostUntil > now ? 1.5 : 1;
       const frozen = player.effects.freezeUntil > now;
@@ -591,7 +592,7 @@ export class SplobGame {
       player.x = clampedX;
       player.y = clampedY;
       if (hitWall) this.releaseMessySplat(player, now);
-      this.paintAt(player, radius * size);
+      this.paintAt(player, radius * size, now);
       this.collectPowerUps(player, now);
       if (player.remote && player.inputUsePower) {
         const usePowerAt = player.inputUsePowerAt || now;
@@ -606,7 +607,7 @@ export class SplobGame {
         this.useFart(player, useFartAt);
       }
       if (player.ai && player.power && this.random() < 0.05) this.usePower(player, now);
-      if (player.ai && player.fartCharge >= 1 && this.random() < 0.012) this.useFart(player, now);
+      if (player.ai && player.fartCharge >= 1 && now > (player.aiFartCooldownUntil || 0) && this.fartTargets(player, now).length && this.random() < 0.012) this.useFart(player, now);
     }
     this.resolveBlobCollisions(now);
   }
@@ -785,8 +786,8 @@ export class SplobGame {
     return { x: this.random() * this.canvas.width, y: this.random() * this.canvas.height, expires: now + 2800 };
   }
 
-  paintAt(player, size = radius) {
-    this.applyPaintOwnership(player, player.x, player.y, size);
+  paintAt(player, size = radius, now = performance.now()) {
+    this.applyPaintOwnership(player, player.x, player.y, size, now);
     const color = PLAYER_COLORS[player.color].paint;
     this.paintCtx.save();
     this.paintCtx.globalCompositeOperation = "source-over";
@@ -797,7 +798,7 @@ export class SplobGame {
     this.paintCtx.restore();
   }
 
-  applyPaintOwnership(player, x, y, size) {
+  applyPaintOwnership(player, x, y, size, now = performance.now()) {
     const ownerIndex = COLOR_ORDER.indexOf(player.color) + 1;
     if (!ownerIndex) return;
     const cellWidth = this.canvas.width / paintOwnerGridWidth;
@@ -825,6 +826,7 @@ export class SplobGame {
       this.players
         .filter((candidate) => candidate.color === color)
         .forEach((victim) => {
+          if (victim.effects.fartInvulnerableUntil > now) return;
           victim.fartCharge = Math.min(1, (victim.fartCharge || 0) + count / fartChargeSamples);
         });
     });
@@ -935,17 +937,24 @@ export class SplobGame {
     if (this.phase !== "playing" || player.deadUntil > now || (player.fartCharge || 0) < 1) return;
     player.fartCharge = 0;
     player.fartCloudUntil = now + fartCloudMs;
+    if (player.ai) player.aiFartCooldownUntil = now + 8000 + this.random() * 4000;
     player.effects.boostUntil = now + this.powerDuration(5000);
     player.effects.bounceImmuneUntil = now + this.powerDuration(5000);
-    this.players
-      .filter((target) => target.id !== player.id && target.deadUntil <= now && Math.hypot(target.x - player.x, target.y - player.y) <= fartImpactRadius)
-      .forEach((target) => {
+    this.fartTargets(player, now).forEach((target) => {
         target.effects.bananaSlowUntil = now + this.powerDuration(fartDebuffMs);
-        target.effects.spinUntil = now + this.powerDuration(fartSpinMs);
+        target.effects.spinUntil = now + this.powerDuration(fartDebuffMs);
         target.effects.fartInvulnerableUntil = now + this.powerDuration(fartDebuffMs);
         target.bounceInvulnerableUntil = Math.max(target.bounceInvulnerableUntil || 0, now + this.powerDuration(fartDebuffMs));
       });
     Sound.play("fart");
+  }
+
+  fartTargets(player, now = performance.now()) {
+    return this.players.filter((target) => (
+      target.id !== player.id
+      && target.deadUntil <= now
+      && Math.hypot(target.x - player.x, target.y - player.y) <= fartImpactRadius
+    ));
   }
 
   powerDuration(ms) {
@@ -970,7 +979,7 @@ export class SplobGame {
   }
 
   makeSplat(player, spread, now = performance.now()) {
-    this.applyPaintOwnership(player, player.x, player.y, spread * 0.72);
+    this.applyPaintOwnership(player, player.x, player.y, spread * 0.72, now);
     this.paintSplatAsset(player.x, player.y, player.color, spread, this.splatVisual());
     this.splats.push({ x: player.x, y: player.y, color: player.color, born: now });
   }
