@@ -42,7 +42,8 @@ const placePowerBands = [
 const placePowerWeights = [0.7, 0.18, 0.08, 0.04];
 const wallSpeedRetain = 0.75;
 const bounceMs = 800;
-const bumpGraceMs = 5000;
+const bumpGraceMs = 2500;
+const bounceSpeedTieTolerance = 8;
 const bounceSpeed = 444;
 const bounceDistance = PLAYER_RADIUS * 0.8;
 const projectileSpeed = 1140;
@@ -558,10 +559,18 @@ function applyBlobBounce(match, a, b, nx, ny, now) {
   } else if ((bBoosted || bShielded) && !aBoosted && !aShielded) {
     startBounce(a, -nx, -ny, now);
   } else {
-    const aDir = oppositeTravelDirection(a, -nx, -ny);
-    const bDir = oppositeTravelDirection(b, nx, ny);
-    startBounce(a, aDir.x, aDir.y, now);
-    startBounce(b, bDir.x, bDir.y, now);
+    const aSpeed = Math.hypot(a.vx, a.vy);
+    const bSpeed = Math.hypot(b.vx, b.vy);
+    if (aSpeed > bSpeed + bounceSpeedTieTolerance) {
+      startBounce(b, nx, ny, now);
+    } else if (bSpeed > aSpeed + bounceSpeedTieTolerance) {
+      startBounce(a, -nx, -ny, now);
+    } else {
+      const aDir = oppositeTravelDirection(a, -nx, -ny);
+      const bDir = oppositeTravelDirection(b, nx, ny);
+      startBounce(a, aDir.x, aDir.y, now);
+      startBounce(b, bDir.x, bDir.y, now);
+    }
   }
   a.lastCollisionAt = now;
   b.lastCollisionAt = now;
@@ -1231,7 +1240,8 @@ function serializePlayers(match) {
     effects: player.effects,
     shieldUntil: player.shieldUntil,
     bounceUntil: player.bounceUntil,
-    bounceMoveUntil: player.bounceMoveUntil
+    bounceMoveUntil: player.bounceMoveUntil,
+    bounceInvulnerableUntil: player.bounceInvulnerableUntil
   }));
 }
 

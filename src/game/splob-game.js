@@ -15,7 +15,8 @@ const accelerationPerSecond = (maxMoveSpeed / 2.5) * 2.5 * 1.3;
 const decelerationPerSecond = accelerationPerSecond * 1.8;
 const wallSpeedRetain = 0.75;
 const bounceMs = 800;
-const bumpGraceMs = 5000;
+const bumpGraceMs = 2500;
+const bounceSpeedTieTolerance = 8;
 const bounceSpeed = baseSpeed * 1.5;
 const bounceDistance = radius * 0.8;
 const paintSample = 7;
@@ -612,10 +613,18 @@ export class SplobGame {
     } else if ((bBoosted || bShielded) && !aBoosted && !aShielded) {
       this.startBounce(a, -nx, -ny, now);
     } else {
-      const aDir = oppositeTravelDirection(a, -nx, -ny);
-      const bDir = oppositeTravelDirection(b, nx, ny);
-      this.startBounce(a, aDir.x, aDir.y, now);
-      this.startBounce(b, bDir.x, bDir.y, now);
+      const aSpeed = Math.hypot(a.vx, a.vy);
+      const bSpeed = Math.hypot(b.vx, b.vy);
+      if (aSpeed > bSpeed + bounceSpeedTieTolerance) {
+        this.startBounce(b, nx, ny, now);
+      } else if (bSpeed > aSpeed + bounceSpeedTieTolerance) {
+        this.startBounce(a, -nx, -ny, now);
+      } else {
+        const aDir = oppositeTravelDirection(a, -nx, -ny);
+        const bDir = oppositeTravelDirection(b, nx, ny);
+        this.startBounce(a, aDir.x, aDir.y, now);
+        this.startBounce(b, bDir.x, bDir.y, now);
+      }
     }
     a.lastCollisionAt = now;
     b.lastCollisionAt = now;
@@ -1374,6 +1383,7 @@ export class SplobGame {
     const bounce = 0;
     const shielded = player.shieldUntil > now;
     const bouncing = player.bounceUntil > now && !shielded;
+    const bounceInvulnerable = player.bounceInvulnerableUntil > now && player.bounceUntil <= now && !shielded;
     const frozen = player.effects.freezeUntil > now;
     const immobilisedWiggle = bouncing && now >= player.bounceMoveUntil ? Math.sin(now / 38) * 0.08 : 0;
     this.ctx.save();
@@ -1385,7 +1395,7 @@ export class SplobGame {
     this.ctx.rotate(spin + immobilisedWiggle + slowWiggle);
     if (player.mood === "happy") this.ctx.rotate(Math.sin(now / 90) * 0.18);
     this.ctx.scale(size, size);
-    this.drawBlobShape(color, now, player.effects.messyUntil > now, frozen);
+    this.drawBlobShape(color, now, player.effects.messyUntil > now, frozen, bounceInvulnerable);
     if (shielded) this.drawShield();
     this.drawFace(frozen ? "sad" : bouncing ? "puzzled" : player.mood, false);
     this.ctx.restore();
@@ -1393,16 +1403,17 @@ export class SplobGame {
     if (player.effects.reverseSignalUntil > now) this.drawReverseSignal(player, now);
   }
 
-  drawBlobShape(color, now, messy = false, frozen = false) {
+  drawBlobShape(color, now, messy = false, frozen = false, bounceInvulnerable = false) {
     const wobble = Math.sin(now / 420) * 0.04;
     const jig = messy ? Math.sin(now / 54) * 0.12 : 0;
+    const flashOn = bounceInvulnerable && Math.floor(now / 110) % 2 === 0;
     this.ctx.save();
     this.ctx.lineCap = "round";
     this.ctx.lineJoin = "round";
 
     this.ctx.globalAlpha = frozen ? 0.74 : 1;
-    this.ctx.fillStyle = frozen ? "#8fdfff" : color.paint;
-    this.ctx.strokeStyle = frozen ? "#3d95c4" : color.dark;
+    this.ctx.fillStyle = frozen ? "#8fdfff" : flashOn ? "#fffdf4" : color.paint;
+    this.ctx.strokeStyle = frozen ? "#3d95c4" : flashOn ? color.light : color.dark;
     this.ctx.lineWidth = 10;
     this.ctx.beginPath();
     this.ctx.moveTo(-bodyHalfWidth * (1 + jig * 0.08), bodyHalfHeight * 0.26);
@@ -1713,6 +1724,7 @@ export class SplobGame {
       player.shieldUntil = localExpiryTime(item.shieldUntil);
       player.bounceUntil = localExpiryTime(item.bounceUntil);
       player.bounceMoveUntil = localExpiryTime(item.bounceMoveUntil);
+      player.bounceInvulnerableUntil = localExpiryTime(item.bounceInvulnerableUntil);
       if (player.local && !previousRolling && player.rollingPower) {
         this.lastPowerShuffleStep = -1;
       }
