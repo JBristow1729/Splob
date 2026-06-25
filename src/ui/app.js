@@ -201,8 +201,7 @@ export function createApp(root) {
     state.game = new SplobGame(canvas, overlay, hud, state.pendingGame, {
       onAgain: () => startGame(state.pendingGame),
       onMenu: () => go("title"),
-      onInput: (event) => state.relay?.send({ type: "game:event", event: { ...event, playerSocketId: state.relay.id } }),
-      onSnapshot: (event) => state.relay?.send({ type: "game:event", event })
+      onInput: (event) => state.relay?.send({ type: "game:event", event: { ...event, playerSocketId: state.relay.id } })
     });
     state.game.start();
   }
@@ -250,7 +249,6 @@ export function createApp(root) {
     state.relay.onGameEvent = (event) => {
       if (!state.game) return;
       if (event?.type === "input") state.game.receiveRemoteInput?.(event);
-      if (event?.type === "snapshot") state.game.applySnapshot?.(event);
     };
     state.relay.onJoinError = () => {
       state.modal = `<section class="dialog paint-dialog"><h2>No lobby found</h2><p>That game does not exist or is full.</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;

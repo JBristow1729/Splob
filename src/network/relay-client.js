@@ -75,7 +75,7 @@ export class RelayClient {
     }
     if (message.type === "game:start") {
       message.config.players = (message.config.players || []).map((player) => ({ ...player, local: player.socketId === this.id }));
-      message.config.authoritative = message.config.hostSocketId === this.id;
+      message.config.syncedSimulation = true;
       this.onGameStart?.(message.config);
     }
     if (message.type === "game:event") this.onGameEvent?.(message.event);

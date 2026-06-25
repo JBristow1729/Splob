@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
 
 const port = Number(process.env.PORT || 8787);
@@ -17,7 +18,7 @@ const clients = new Map();
 const lobbies = new Map();
 
 wss.on("connection", (socket) => {
-  const id = crypto.randomUUID();
+  const id = randomUUID();
   clients.set(id, { id, socket, lobbyCode: null });
   socket.send(JSON.stringify({ type: "hello", id }));
   socket.on("message", (raw) => {
@@ -109,7 +110,9 @@ function startGame(id, message) {
   const config = {
     ...(message.config || {}),
     mode: "multiplayer",
-    hostSocketId: id,
+    seed: randomUUID(),
+    startAt: Date.now() + 1800,
+    protocol: 2,
     players: lobby.players.map((player) => ({ ...player, local: false }))
   };
   relayToLobby(id, { type: "game:start", config });
@@ -119,6 +122,7 @@ function startGame(id, message) {
 function relayToLobby(id, message) {
   const lobby = lobbies.get(clients.get(id)?.lobbyCode);
   if (!lobby) return;
+  if (message.type === "game:event") message.event = { ...(message.event || {}), serverAt: Date.now() };
   for (const player of lobby.players) send(player.socketId, message);
 }
 

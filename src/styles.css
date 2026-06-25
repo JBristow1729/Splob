@@ -763,7 +763,8 @@ button {
 .canvas-frame {
   position: relative;
   width: min(96vw, 1180px);
-  height: min(82vh, 720px);
+  aspect-ratio: 16 / 9;
+  max-height: min(82vh, 720px);
   border: clamp(1rem, 2.2vw, 1.7rem) solid #8b552b;
   border-radius: var(--radius);
   background:
@@ -935,7 +936,7 @@ button {
 
   .canvas-frame {
     width: calc(100vw - 1rem);
-    height: calc(100vh - 1rem);
+    max-height: calc(100vh - 1rem);
     border-width: 0.8rem;
   }
 }

@@ -30,6 +30,8 @@ const bananaProjectileWidth = 30;
 const spikyProjectileRadius = 45;
 const spikyProjectileSpikeRadius = spikyProjectileRadius * 1.28;
 const powerBallColors = ["#00b7e8", "#ec159b", "#f4d12f", "#26c95f"];
+const arenaWidth = 1280;
+const arenaHeight = 720;
 const placePowerBands = [
   { place: 1, powers: ["shield", "banana"] },
   { place: 2, powers: ["reverse", "messy", "spiky", "paintball"] },
@@ -71,11 +73,11 @@ export class SplobGame {
     this.projectiles = [];
     this.splats = [];
     this.confetti = [];
+    this.multiplayer = config.mode === "multiplayer";
+    this.rng = seededRandom(config.seed || `${Date.now()}-${Math.random()}`);
     this.remoteInputs = new Map();
     this.lastInputSignature = "";
-    this.lastSnapshotAt = 0;
-    this.lastPaintSnapshotAt = 0;
-    this.authoritative = config.mode !== "multiplayer" || config.authoritative !== false;
+    this.matchStartAt = Number(config.startAt || 0);
     this.lastPowerShuffleStep = -1;
     this.lastEmergencySecond = null;
     this.winner = null;
@@ -96,8 +98,9 @@ export class SplobGame {
     window.addEventListener("keyup", this.onKeyUp);
     this.running = true;
     this.phase = "countdown";
-    this.countdownAt = performance.now();
-    this.last = performance.now();
+    const now = performance.now();
+    this.countdownAt = this.multiplayer && this.matchStartAt ? now + (this.matchStartAt - Date.now()) : now;
+    this.last = now;
     this.roundSeconds = GAME_SECONDS;
     this.suddenDeath = false;
     this.suddenDeathLoops = 0;
@@ -135,8 +138,8 @@ export class SplobGame {
       players.push({ id: "local", name: "You", local: true, color: localColor });
       used.add(localColor);
     }
-    const aiNames = shuffle(AI_NAMES);
-    while (players.length < 4) {
+    const aiNames = shuffle(AI_NAMES, () => this.random());
+    while (!this.multiplayer && players.length < 4) {
       const color = COLOR_ORDER.find((item) => !used.has(item));
       used.add(color);
       players.push({ id: `ai-${players.length}`, name: aiNames[players.length - 1] || AI_NAMES[players.length % AI_NAMES.length], color, ai: true });
@@ -171,11 +174,9 @@ export class SplobGame {
   }
 
   resize() {
-    const rect = this.canvas.getBoundingClientRect();
-    const scale = window.devicePixelRatio || 1;
-    const width = Math.max(320, Math.floor(rect.width * scale));
-    const height = Math.max(260, Math.floor(rect.height * scale));
-    if (this.canvas.width === width && this.canvas.height === height) return;
+    const width = arenaWidth;
+    const height = arenaHeight;
+    if (this.canvas.width === width && this.canvas.height === height && this.positionsInitialized) return;
     const oldPaint = this.paint;
     this.canvas.width = width;
     this.canvas.height = height;
@@ -228,8 +229,9 @@ export class SplobGame {
     else this.keys.delete(event.code);
     const local = this.localPlayer();
     if (down && event.code === "Space" && local) {
-      if (this.authoritative) this.usePower(local);
-      else this.hooks.onInput?.({ keys: [...this.keys], usePower: true });
+      const at = performance.now();
+      this.usePower(local, at);
+      if (this.multiplayer) this.hooks.onInput?.({ type: "input", keys: this.sortedKeys(), usePower: true, matchTime: this.matchTime(at) });
     }
     this.sendInputIfChanged(false);
   }
@@ -244,12 +246,9 @@ export class SplobGame {
   }
 
   update(now, dt) {
-    if (!this.authoritative) {
-      this.sendInputIfChanged(false);
-      return;
-    }
+    if (this.multiplayer) this.sendInputIfChanged(false);
     if (this.phase === "countdown") {
-      const index = Math.floor((now - this.countdownAt) / 850);
+      const index = Math.max(0, Math.floor((now - this.countdownAt) / 850));
       this.overlay.innerHTML = `<div class="countdown">${COUNTDOWN_LABELS[index] || ""}</div><div class="you-cue">YOU</div>`;
       const local = this.localPlayer() || this.players[0];
       this.overlay.style.setProperty("--you-x", `${(local.x / this.canvas.width) * 100}%`);
@@ -278,7 +277,6 @@ export class SplobGame {
     this.updateProjectiles(now, dt);
     this.updateSplats(now);
     if (Math.floor(now / 500) !== Math.floor((now - dt * 1000) / 500)) this.computeCoverage();
-    this.broadcastSnapshot(now);
   }
 
   updatePowerSlot(now) {
@@ -360,10 +358,12 @@ export class SplobGame {
       this.paintAt(player, radius * size);
       this.collectPowerUps(player, now);
       if (player.remote && player.inputUsePower) {
+        const usePowerAt = player.inputUsePowerAt || now;
         player.inputUsePower = false;
-        this.usePower(player);
+        player.inputUsePowerAt = 0;
+        this.usePower(player, usePowerAt);
       }
-      if (player.ai && player.power && Math.random() < 0.05) this.usePower(player);
+      if (player.ai && player.power && this.random() < 0.05) this.usePower(player, now);
     }
     this.resolveBlobCollisions(now);
   }
@@ -443,7 +443,7 @@ export class SplobGame {
   releaseMessySplat(player, now) {
     if (!player.effects.messyUntil || player.effects.messyUntil <= now || now - (player.lastMessySplatAt || 0) < 140) return;
     player.lastMessySplatAt = now;
-    this.makeSplat(player, radius * 2.2 * playerSizeMultiplier(player, now));
+    this.makeSplat(player, radius * 2.2 * playerSizeMultiplier(player, now), now);
   }
 
   clearBounce(player) {
@@ -470,7 +470,7 @@ export class SplobGame {
   aiVector(player, now) {
     if (!player.aiTarget || now > player.aiTarget.expires || Math.hypot(player.aiTarget.x - player.x, player.aiTarget.y - player.y) < 42) {
       const power = this.powerUps[0];
-      player.aiTarget = power && Math.random() < 0.55
+      player.aiTarget = power && this.random() < 0.55
         ? { x: power.x, y: power.y, expires: now + 2500 }
         : this.findAiPaintTarget(player, now);
     }
@@ -483,11 +483,11 @@ export class SplobGame {
 
   findAiPaintTarget(player, now) {
     for (let i = 0; i < 16; i += 1) {
-      const x = 30 + Math.random() * (this.canvas.width - 60);
-      const y = 30 + Math.random() * (this.canvas.height - 60);
+      const x = 30 + this.random() * (this.canvas.width - 60);
+      const y = 30 + this.random() * (this.canvas.height - 60);
       if (this.colorAt(x, y) !== player.color) return { x, y, expires: now + 3600 };
     }
-    return { x: Math.random() * this.canvas.width, y: Math.random() * this.canvas.height, expires: now + 2800 };
+    return { x: this.random() * this.canvas.width, y: this.random() * this.canvas.height, expires: now + 2800 };
   }
 
   paintAt(player, size = radius) {
@@ -517,7 +517,7 @@ export class SplobGame {
       const won = this.choosePower(player);
       if (this.suddenDeath) {
         player.power = won;
-        this.usePower(player);
+        this.usePower(player, now);
         continue;
       }
       player.rollingPower = won;
@@ -529,23 +529,22 @@ export class SplobGame {
 
   choosePower(player) {
     const ranked = [...this.players]
-      .map((candidate) => ({ candidate, tieBreaker: Math.random() }))
+      .map((candidate) => ({ candidate, tieBreaker: this.random() }))
       .sort((a, b) => (b.candidate.coverage - a.candidate.coverage) || (a.tieBreaker - b.tieBreaker))
       .map((entry) => entry.candidate);
     const rankIndex = ranked.findIndex((candidate) => candidate.id === player.id);
     const currentBandIndex = rankIndex === -1 ? placePowerBands.length - 1 : rankIndex;
     const bandOrder = orderedPlaceBands(currentBandIndex);
-    const chosenBand = weightedChoice(bandOrder, placePowerWeights);
+    const chosenBand = weightedChoice(bandOrder, placePowerWeights, () => this.random());
     const eligibleIds = new Set(chosenBand.powers);
     const eligible = POWER_UPS.filter((power) => eligibleIds.has(power.id));
-    return eligible[(Math.random() * eligible.length) | 0];
+    return eligible[(this.random() * eligible.length) | 0];
   }
 
-  usePower(player) {
+  usePower(player, now = performance.now()) {
     if (this.phase !== "playing" || !player.power || player.rollingPower) return;
     const power = player.power;
     player.power = null;
-    const now = performance.now();
     this.signalPowerUse(player, power, now);
     if (power.id === "boost") {
       player.effects.boostUntil = now + 5000;
@@ -556,32 +555,32 @@ export class SplobGame {
       player.effects.bounceImmuneUntil = now + 5000;
     }
     if (power.id === "messy") player.effects.messyUntil = now + 10000;
-    if (power.id === "splat") this.makeSplat(player, radius * 6 * playerSizeMultiplier(player, now));
+    if (power.id === "splat") this.makeSplat(player, radius * 6 * playerSizeMultiplier(player, now), now);
     if (power.id === "shield") player.shieldUntil = now + 10000;
     if (power.id === "paintball") {
       this.aimAtRandomOpponent(player, now);
-      this.launchProjectile(player, power.id);
+      this.launchProjectile(player, power.id, now);
     }
     if (power.id === "slow") {
       player.effects.bounceImmuneUntil = now + 5000;
-      this.opponentsOf(player).forEach((opponent) => {
+      this.opponentsOf(player, now).forEach((opponent) => {
         opponent.effects.slowUntil = now + 5000;
       });
     }
     if (power.id === "shrink") {
-      this.opponentsOf(player).forEach((opponent) => {
+      this.opponentsOf(player, now).forEach((opponent) => {
         opponent.effects.shrinkUntil = now + 5000;
       });
     }
     if (power.id === "reverse") {
       player.effects.reverseSignalUntil = now + 2000;
-      this.opponentsOf(player).forEach((opponent) => {
+      this.opponentsOf(player, now).forEach((opponent) => {
         opponent.effects.reverseUntil = now + 5000;
       });
       Sound.play("swishoo");
     }
     if (power.id === "freeze") {
-      this.opponentsOf(player).forEach((opponent) => {
+      this.opponentsOf(player, now).forEach((opponent) => {
         opponent.effects.freezeUntil = now + 5000;
         opponent.vx = 0;
         opponent.vy = 0;
@@ -590,7 +589,7 @@ export class SplobGame {
     }
     if (power.id === "banana" || power.id === "spiky") {
       this.aimAtRandomOpponent(player, now);
-      this.launchProjectile(player, power.id);
+      this.launchProjectile(player, power.id, now);
     }
     if (power.id !== "reverse") Sound.play(power.id === "splat" ? "splat" : "power");
   }
@@ -600,27 +599,29 @@ export class SplobGame {
     player.effects.powerSignalUntil = now + 1200;
   }
 
-  opponentsOf(player) {
-    return this.players.filter((opponent) => opponent.id !== player.id && opponent.deadUntil <= performance.now());
+  opponentsOf(player, now = performance.now()) {
+    return this.players.filter((opponent) => opponent.id !== player.id && opponent.deadUntil <= now);
   }
 
   aimAtRandomOpponent(player, now) {
     if (player.local) return;
     const targets = this.players.filter((target) => target.id !== player.id && target.deadUntil <= now);
-    const target = targets[(Math.random() * targets.length) | 0];
+    const target = targets[(this.random() * targets.length) | 0];
     if (!target) return;
     player.angle = Math.atan2(target.y - player.y, target.x - player.x);
   }
 
-  makeSplat(player, spread) {
+  makeSplat(player, spread, now = performance.now()) {
     this.paintSplatAsset(player, spread);
-    this.splats.push({ x: player.x, y: player.y, color: player.color, born: performance.now() });
+    this.splats.push({ x: player.x, y: player.y, color: player.color, born: now });
   }
 
   paintSplatAsset(player, spread) {
-    const ready = splatImages.filter((image) => image.complete && image.naturalWidth);
-    const image = ready[(Math.random() * ready.length) | 0];
-    if (!image) {
+    const imageIndex = (this.random() * Math.max(1, splatImages.length)) | 0;
+    const size = Math.round(spread * (1.45 + this.random() * 0.35));
+    const angle = this.random() * Math.PI * 2;
+    const image = splatImages[imageIndex];
+    if (!image || !image.complete || !image.naturalWidth) {
       this.paintCtx.fillStyle = PLAYER_COLORS[player.color].paint;
       this.paintCtx.beginPath();
       this.paintCtx.arc(player.x, player.y, spread * 0.55, 0, Math.PI * 2);
@@ -628,8 +629,6 @@ export class SplobGame {
       return;
     }
     const color = PLAYER_COLORS[player.color].paint;
-    const size = Math.round(spread * (1.45 + Math.random() * 0.35));
-    const angle = Math.random() * Math.PI * 2;
     this.splatTintCanvas.width = size;
     this.splatTintCanvas.height = size;
     this.splatTintCtx.clearRect(0, 0, size, size);
@@ -645,7 +644,7 @@ export class SplobGame {
     this.paintCtx.restore();
   }
 
-  launchProjectile(player, type) {
+  launchProjectile(player, type, now = performance.now()) {
     const hitRadius = projectileSize(type);
     this.projectiles.push({
       type,
@@ -656,7 +655,7 @@ export class SplobGame {
       y: player.y + Math.sin(player.angle) * (radius + hitRadius),
       vx: Math.cos(player.angle) * projectileSpeed,
       vy: Math.sin(player.angle) * projectileSpeed,
-      born: performance.now()
+      born: now
     });
   }
 
@@ -701,7 +700,7 @@ export class SplobGame {
         target.effects.bananaSlowUntil = now + 3000;
         target.effects.spinUntil = now + 650;
       } else {
-        this.makeSplat(target, radius * 2.5);
+        this.makeSplat(target, radius * 2.5, now);
         this.killPlayer(target, now);
       }
       Sound.play("splat");
@@ -743,12 +742,12 @@ export class SplobGame {
   spawnPowerUp(now) {
     if (this.powerUps.length < 5) {
       this.powerUps.push({
-        x: powerRadius + 24 + Math.random() * (this.canvas.width - (powerRadius + 24) * 2),
-        y: powerRadius + 24 + Math.random() * (this.canvas.height - (powerRadius + 24) * 2),
+        x: powerRadius + 24 + this.random() * (this.canvas.width - (powerRadius + 24) * 2),
+        y: powerRadius + 24 + this.random() * (this.canvas.height - (powerRadius + 24) * 2),
         born: now
       });
     }
-    const delay = 2500 + Math.random() * 2000;
+    const delay = 2500 + this.random() * 2000;
     this.powerSpawnAt = now + (this.suddenDeath ? delay / 4 : delay);
   }
 
@@ -880,15 +879,16 @@ export class SplobGame {
 
   releaseConfetti() {
     const colors = Object.values(PLAYER_COLORS).map((color) => color.paint);
+    const now = performance.now();
     this.confetti = Array.from({ length: 130 }, () => ({
-      x: Math.random() * this.canvas.width,
-      y: -20 - Math.random() * this.canvas.height * 0.4,
-      vx: -90 + Math.random() * 180,
-      vy: 120 + Math.random() * 260,
-      size: 5 + Math.random() * 8,
-      spin: Math.random() * Math.PI,
-      color: colors[(Math.random() * colors.length) | 0],
-      born: performance.now()
+      x: this.random() * this.canvas.width,
+      y: -20 - this.random() * this.canvas.height * 0.4,
+      vx: -90 + this.random() * 180,
+      vy: 120 + this.random() * 260,
+      size: 5 + this.random() * 8,
+      spin: this.random() * Math.PI,
+      color: colors[(this.random() * colors.length) | 0],
+      born: now
     }));
   }
 
@@ -1288,123 +1288,41 @@ export class SplobGame {
     return this.players.find((player) => player.local);
   }
 
+  random() {
+    return this.rng();
+  }
+
+  matchTime(now = performance.now()) {
+    return now - this.countdownAt;
+  }
+
+  localTimeForMatch(matchTime) {
+    return this.countdownAt + Number(matchTime || this.matchTime());
+  }
+
+  sortedKeys() {
+    return [...this.keys].sort();
+  }
+
   receiveRemoteInput(event) {
-    if (!this.authoritative || event?.type !== "input" || !event.playerSocketId) return;
+    if (!this.multiplayer || event?.type !== "input" || !event.playerSocketId) return;
     this.remoteInputs.set(event.playerSocketId, { keys: event.keys || [] });
     const player = this.players.find((candidate) => candidate.socketId === event.playerSocketId);
-    if (player && event.usePower) player.inputUsePower = true;
+    if (player && !player.local && event.usePower) {
+      player.inputUsePower = true;
+      player.inputUsePowerAt = this.localTimeForMatch(event.matchTime);
+    }
   }
 
   sendInputIfChanged(force) {
-    if (this.authoritative || !this.hooks.onInput) return;
-    const keys = [...this.keys].sort();
+    if (!this.multiplayer || !this.hooks.onInput) return;
+    const keys = this.sortedKeys();
     const signature = keys.join("|");
     if (!force && signature === this.lastInputSignature) return;
     this.lastInputSignature = signature;
-    this.hooks.onInput({ type: "input", keys, usePower: false });
+    this.hooks.onInput({ type: "input", keys, usePower: false, matchTime: this.matchTime() });
   }
 
-  broadcastSnapshot(now) {
-    if (!this.hooks.onSnapshot || now - this.lastSnapshotAt < 50) return;
-    const includePaint = now - this.lastPaintSnapshotAt > 250;
-    this.lastSnapshotAt = now;
-    if (includePaint) this.lastPaintSnapshotAt = now;
-    this.computeCoverage();
-    this.hooks.onSnapshot({
-      type: "snapshot",
-      phase: this.phase,
-      timer: this.hud.timer?.textContent || "",
-      overlay: this.overlay.innerHTML,
-      players: this.players.map((player) => serializePlayer(player)),
-      powerUps: this.powerUps.map((power) => ({ ...power })),
-      projectiles: this.projectiles.map((projectile) => ({ ...projectile })),
-      splats: this.splats.map((splat) => ({ ...splat })),
-      paint: includePaint ? this.paint.toDataURL("image/webp", 0.82) : undefined
-    });
-  }
-
-  applySnapshot(snapshot) {
-    if (this.authoritative || snapshot?.type !== "snapshot") return;
-    this.phase = snapshot.phase || this.phase;
-    if (this.hud.timer && snapshot.timer) this.hud.timer.textContent = snapshot.timer;
-    if (typeof snapshot.overlay === "string") {
-      this.overlay.innerHTML = snapshot.overlay;
-      this.overlay.querySelector('[data-game-action="again"]')?.addEventListener("click", () => this.hooks.onAgain?.());
-      this.overlay.querySelector('[data-game-action="menu"]')?.addEventListener("click", () => this.hooks.onMenu?.());
-    }
-    this.mergePlayers(snapshot.players || []);
-    const local = this.localPlayer();
-    if (local) {
-      this.overlay.style.setProperty("--you-x", `${(local.x / this.canvas.width) * 100}%`);
-      this.overlay.style.setProperty("--you-y", `${(local.y / this.canvas.height) * 100}%`);
-    }
-    this.powerUps = (snapshot.powerUps || []).map((power) => ({ ...power }));
-    this.projectiles = (snapshot.projectiles || []).map((projectile) => ({ ...projectile }));
-    this.splats = (snapshot.splats || []).map((splat) => ({ ...splat }));
-    if (snapshot.paint) this.applyPaintSnapshot(snapshot.paint);
-    this.renderSnapshotScoreboard();
-  }
-
-  mergePlayers(players) {
-    const localId = this.localPlayer()?.id;
-    this.players = players.map((incoming, index) => ({
-      ...incoming,
-      local: incoming.id === localId,
-      remote: incoming.id !== localId && !incoming.ai,
-      ai: Boolean(incoming.ai),
-      effects: { ...(incoming.effects || {}) },
-      spawnIndex: typeof incoming.spawnIndex === "number" ? incoming.spawnIndex : index
-    }));
-  }
-
-  applyPaintSnapshot(src) {
-    const image = new Image();
-    image.onload = () => {
-      this.paintCtx.clearRect(0, 0, this.paint.width, this.paint.height);
-      this.paintCtx.drawImage(image, 0, 0, this.paint.width, this.paint.height);
-    };
-    image.src = src;
-  }
-
-  renderSnapshotScoreboard() {
-    if (!this.hud.results || this.phase === "results" || this.phase === "stop") return;
-    this.standings().forEach((player, index) => this.addScoreRow(player, index + 1));
-  }
-}
-
-function serializePlayer(player) {
-  return {
-    id: player.id,
-    socketId: player.socketId,
-    profileId: player.profileId,
-    name: player.name,
-    color: player.color,
-    remote: player.remote,
-    ai: player.ai,
-    x: player.x,
-    y: player.y,
-    vx: player.vx,
-    vy: player.vy,
-    angle: player.angle,
-    lastCollisionAt: player.lastCollisionAt,
-    bounceUntil: player.bounceUntil,
-    bounceMoveUntil: player.bounceMoveUntil,
-    bounceInvulnerableUntil: player.bounceInvulnerableUntil,
-    bounceVx: player.bounceVx,
-    bounceVy: player.bounceVy,
-    power: player.power,
-    rollingPower: player.rollingPower,
-    rollEndsAt: player.rollEndsAt,
-    effects: player.effects,
-    deadUntil: player.deadUntil,
-    spawnIndex: player.spawnIndex,
-    spawnX: player.spawnX,
-    spawnY: player.spawnY,
-    spawnAngle: player.spawnAngle,
-    shieldUntil: player.shieldUntil,
-    mood: player.mood,
-    coverage: player.coverage
-  };
 }
 
 function closeTo(pixel, hex) {
@@ -1437,10 +1355,10 @@ function scoreBlobDataUri(color) {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
-function shuffle(items) {
+function shuffle(items, random = Math.random) {
   const copy = [...items];
   for (let index = copy.length - 1; index > 0; index -= 1) {
-    const swap = (Math.random() * (index + 1)) | 0;
+    const swap = (random() * (index + 1)) | 0;
     [copy[index], copy[swap]] = [copy[swap], copy[index]];
   }
   return copy;
@@ -1460,14 +1378,33 @@ function orderedPlaceBands(currentIndex) {
   return [own, ...worsePlaces, ...betterPlaces];
 }
 
-function weightedChoice(items, weights) {
+function weightedChoice(items, weights, random = Math.random) {
   const total = items.reduce((sum, _, index) => sum + (weights[index] || 0), 0);
-  let roll = Math.random() * total;
+  let roll = random() * total;
   for (let index = 0; index < items.length; index += 1) {
     roll -= weights[index] || 0;
     if (roll <= 0) return items[index];
   }
   return items[items.length - 1];
+}
+
+function seededRandom(seed) {
+  let state = hashSeed(String(seed));
+  return () => {
+    state = (state + 0x6D2B79F5) | 0;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function hashSeed(seed) {
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 function playerSizeMultiplier(player, now) {
