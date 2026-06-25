@@ -21,7 +21,7 @@ export const BODY_HALF_HEIGHT = PLAYER_RADIUS * 0.84;
 
 export const SERVER_TICK_RATE = 30;
 export const SNAPSHOT_RATE = 20;
-export const PAINT_BATCH_RATE = 20;
+export const PAINT_BATCH_RATE = 30;
 export const SCORE_UPDATE_RATE = 4;
 export const SCORE_GRID_WIDTH = 320;
 export const SCORE_GRID_HEIGHT = 180;

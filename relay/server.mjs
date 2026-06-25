@@ -239,6 +239,8 @@ function createMatch(lobby) {
       score: 0,
       spawnIndex: index,
       lastPaintTick: -99,
+      lastPaintX: spawn.x,
+      lastPaintY: spawn.y,
       power: null,
       effects: {},
       shieldUntil: 0,
@@ -323,9 +325,13 @@ function tickMatch(matchId) {
     consumePowerUse(match, player, match.inputs.get(player.socketId) || emptyInput(), now);
     movePlayer(player, match.inputs.get(player.socketId) || emptyInput(), dt, now);
     collectPowerUps(match, player, now);
-    if (match.tick - player.lastPaintTick >= 2 && (Math.hypot(player.vx, player.vy) > 4 || player.lastPaintTick < 0)) {
+    if (match.tick - player.lastPaintTick >= 1 && (Math.hypot(player.vx, player.vy) > 4 || player.lastPaintTick < 0)) {
+      const fromX = player.lastPaintTick < 0 ? player.x : player.lastPaintX;
+      const fromY = player.lastPaintTick < 0 ? player.y : player.lastPaintY;
       player.lastPaintTick = match.tick;
-      addPaintStamp(match, player, PLAYER_RADIUS * playerSizeMultiplier(player, now));
+      addPaintStamp(match, player, PLAYER_RADIUS * playerSizeMultiplier(player, now), { fromX: round(fromX), fromY: round(fromY) });
+      player.lastPaintX = player.x;
+      player.lastPaintY = player.y;
     }
   }
   updateProjectiles(match, now, dt);
@@ -584,16 +590,20 @@ function launchProjectile(match, player, type, now) {
     y: player.y + Math.sin(player.angle) * (PLAYER_RADIUS + hitRadius),
     vx: Math.cos(player.angle) * projectileSpeed,
     vy: Math.sin(player.angle) * projectileSpeed,
-    born: now
+    born: now,
+    lastPaintX: player.x + Math.cos(player.angle) * (PLAYER_RADIUS + hitRadius),
+    lastPaintY: player.y + Math.sin(player.angle) * (PLAYER_RADIUS + hitRadius)
   });
 }
 
 function updateProjectiles(match, now, dt) {
   match.projectiles = match.projectiles.filter((projectile) => {
+    const previousX = projectile.x;
+    const previousY = projectile.y;
     projectile.x += projectile.vx * dt;
     projectile.y += projectile.vy * dt;
     if (projectile.type === "paintball") {
-      addPaintProjectileStamp(match, projectile);
+      addPaintProjectileStamp(match, projectile, previousX, previousY);
     }
     const edge = projectile.size;
     if (projectile.x < edge) {
@@ -624,11 +634,13 @@ function updateProjectiles(match, now, dt) {
   });
 }
 
-function addPaintProjectileStamp(match, projectile) {
+function addPaintProjectileStamp(match, projectile, fromX, fromY) {
   const owner = match.players.find((player) => player.id === projectile.owner);
   if (!owner) return;
   const stamp = {
     playerId: owner.id,
+    fromX: round(fromX),
+    fromY: round(fromY),
     x: round(projectile.x),
     y: round(projectile.y),
     radius: projectile.size,
@@ -671,6 +683,23 @@ function addPaintStamp(match, player, radius, options = {}) {
 }
 
 function applyStampToScoreGrid(match, stamp) {
+  if (typeof stamp.fromX === "number" && typeof stamp.fromY === "number" && stamp.type !== "splat") {
+    const distance = Math.hypot(stamp.x - stamp.fromX, stamp.y - stamp.fromY);
+    const steps = Math.max(1, Math.ceil(distance / Math.max(1, stamp.radius * 0.5)));
+    for (let step = 0; step <= steps; step += 1) {
+      const t = step / steps;
+      applyStampCircleToScoreGrid(match, {
+        ...stamp,
+        x: stamp.fromX + (stamp.x - stamp.fromX) * t,
+        y: stamp.fromY + (stamp.y - stamp.fromY) * t
+      });
+    }
+    return;
+  }
+  applyStampCircleToScoreGrid(match, stamp);
+}
+
+function applyStampCircleToScoreGrid(match, stamp) {
   const ownerIndex = match.players.findIndex((player) => player.id === stamp.playerId) + 1;
   if (!ownerIndex) return;
   const cellWidth = ARENA_WIDTH / SCORE_GRID_WIDTH;

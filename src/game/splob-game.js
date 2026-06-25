@@ -1550,9 +1550,25 @@ export class SplobGame {
     this.paintCtx.save();
     this.paintCtx.globalCompositeOperation = "source-over";
     this.paintCtx.fillStyle = color;
-    this.paintCtx.beginPath();
-    this.paintCtx.arc(Number(stamp.x || 0), Number(stamp.y || 0), Number(stamp.radius || radius), 0, Math.PI * 2);
-    this.paintCtx.fill();
+    const x = Number(stamp.x || 0);
+    const y = Number(stamp.y || 0);
+    const size = Number(stamp.radius || radius);
+    const fromX = Number(stamp.fromX);
+    const fromY = Number(stamp.fromY);
+    if (Number.isFinite(fromX) && Number.isFinite(fromY) && Math.hypot(x - fromX, y - fromY) > 1) {
+      this.paintCtx.strokeStyle = color;
+      this.paintCtx.lineWidth = size * 2;
+      this.paintCtx.lineCap = "round";
+      this.paintCtx.lineJoin = "round";
+      this.paintCtx.beginPath();
+      this.paintCtx.moveTo(fromX, fromY);
+      this.paintCtx.lineTo(x, y);
+      this.paintCtx.stroke();
+    } else {
+      this.paintCtx.beginPath();
+      this.paintCtx.arc(x, y, size, 0, Math.PI * 2);
+      this.paintCtx.fill();
+    }
     this.paintCtx.restore();
   }
 
