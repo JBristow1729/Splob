@@ -39,6 +39,8 @@ export function createApp(root) {
     lobby: null,
     game: null,
     pendingGame: null,
+    inputSeq: 0,
+    serverPlayerId: "",
     friendsTab: "friends",
     friends: [],
     recents: [],
@@ -201,7 +203,21 @@ export function createApp(root) {
     state.game = new SplobGame(canvas, overlay, hud, state.pendingGame, {
       onAgain: () => startGame(state.pendingGame),
       onMenu: () => go("title"),
-      onInput: (event) => state.relay?.send({ type: "game:event", event: { ...event, playerSocketId: state.relay.id } })
+      onInput: (event) => {
+        if (state.pendingGame?.authoritative) {
+          state.relay?.send({
+            type: "input",
+            seq: ++state.inputSeq,
+            keys: event.keys,
+            clientTime: Date.now()
+          });
+          if (event.usePower) {
+            state.relay?.send({ type: "usePower", seq: state.inputSeq, clientTime: Date.now() });
+          }
+          return;
+        }
+        state.relay?.send({ type: "game:event", event: { ...event, playerSocketId: state.relay.id } });
+      }
     });
     state.game.start();
   }
@@ -246,6 +262,17 @@ export function createApp(root) {
       else app.render();
     };
     state.relay.onGameStart = (config) => startGame(config);
+    state.relay.onJoined = (message) => {
+      state.serverPlayerId = message.playerId;
+    };
+    state.relay.onSnapshot = (snapshot) => state.game?.applyServerSnapshot?.(snapshot);
+    state.relay.onPaintBatch = (batch) => state.game?.applyPaintBatch?.(batch);
+    state.relay.onScoreUpdate = (update) => state.game?.applyScoreUpdate?.(update);
+    state.relay.onGameOver = (result) => state.game?.applyGameOver?.(result);
+    state.relay.onServerError = (message) => {
+      state.modal = `<section class="dialog paint-dialog"><h2>Server error</h2><p>${message.message || "The multiplayer server could not process that request."}</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;
+      app.render();
+    };
     state.relay.onGameEvent = (event) => {
       if (!state.game) return;
       if (event?.type === "input") state.game.receiveRemoteInput?.(event);

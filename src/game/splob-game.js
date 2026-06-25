@@ -74,9 +74,12 @@ export class SplobGame {
     this.splats = [];
     this.confetti = [];
     this.multiplayer = config.mode === "multiplayer";
+    this.authoritative = Boolean(config.authoritative);
     this.rng = seededRandom(config.seed || `${Date.now()}-${Math.random()}`);
     this.remoteInputs = new Map();
     this.lastInputSignature = "";
+    this.serverTimeRemainingMs = Number(config.durationMs || GAME_SECONDS * 1000);
+    this.serverGameOver = null;
     this.matchStartAt = Number(config.startAt || 0);
     this.lastPowerShuffleStep = -1;
     this.lastEmergencySecond = null;
@@ -97,7 +100,7 @@ export class SplobGame {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     this.running = true;
-    this.phase = "countdown";
+    this.phase = this.authoritative ? "playing" : "countdown";
     const now = performance.now();
     this.countdownAt = this.multiplayer && this.matchStartAt ? now + (this.matchStartAt - Date.now()) : now;
     this.last = now;
@@ -105,6 +108,11 @@ export class SplobGame {
     this.suddenDeath = false;
     this.suddenDeathLoops = 0;
     if (this.hud.results) this.hud.results.innerHTML = "";
+    if (this.authoritative) {
+      this.overlay.innerHTML = "";
+      this.startedAt = now;
+      this.sendInputIfChanged(true);
+    }
     this.loop(this.last);
   }
 
@@ -229,6 +237,10 @@ export class SplobGame {
     else this.keys.delete(event.code);
     const local = this.localPlayer();
     if (down && event.code === "Space" && local) {
+      if (this.authoritative) {
+        this.hooks.onInput?.({ type: "input", keys: this.inputKeys(), usePower: true, matchTime: this.matchTime(performance.now()) });
+        return;
+      }
       const at = performance.now();
       this.usePower(local, at);
       if (this.multiplayer) this.hooks.onInput?.({ type: "input", keys: this.sortedKeys(), usePower: true, matchTime: this.matchTime(at) });
@@ -247,6 +259,10 @@ export class SplobGame {
 
   update(now, dt) {
     if (this.multiplayer) this.sendInputIfChanged(false);
+    if (this.authoritative) {
+      this.updateAuthoritativeRender(now);
+      return;
+    }
     if (this.phase === "countdown") {
       const index = Math.max(0, Math.floor((now - this.countdownAt) / 850));
       this.overlay.innerHTML = `<div class="countdown">${COUNTDOWN_LABELS[index] || ""}</div><div class="you-cue">YOU</div>`;
@@ -277,6 +293,30 @@ export class SplobGame {
     this.updateProjectiles(now, dt);
     this.updateSplats(now);
     if (Math.floor(now / 500) !== Math.floor((now - dt * 1000) / 500)) this.computeCoverage();
+  }
+
+  updateAuthoritativeRender(now) {
+    if (this.phase !== "playing") return;
+    this.interpolateServerPlayers();
+    const secondsLeft = Math.max(0, Math.ceil(this.serverTimeRemainingMs / 1000));
+    this.hud.timer.textContent = formatTime(secondsLeft);
+    if (secondsLeft > 0 && secondsLeft <= 5 && secondsLeft !== this.lastEmergencySecond) {
+      this.lastEmergencySecond = secondsLeft;
+      Sound.play("countdown", secondsLeft);
+    }
+  }
+
+  interpolateServerPlayers() {
+    for (const player of this.players) {
+      if (typeof player.targetX !== "number" || typeof player.targetY !== "number") continue;
+      const factor = player.local ? 0.48 : 0.28;
+      player.x += (player.targetX - player.x) * factor;
+      player.y += (player.targetY - player.y) * factor;
+      player.vx = player.targetVx || 0;
+      player.vy = player.targetVy || 0;
+      player.angle = typeof player.targetAngle === "number" ? player.targetAngle : player.angle;
+      player.coverage = typeof player.targetScore === "number" ? player.targetScore : player.coverage;
+    }
   }
 
   updatePowerSlot(now) {
@@ -1304,8 +1344,17 @@ export class SplobGame {
     return [...this.keys].sort();
   }
 
+  inputKeys() {
+    return {
+      up: this.keys.has("KeyW"),
+      down: this.keys.has("KeyS"),
+      left: this.keys.has("KeyA"),
+      right: this.keys.has("KeyD")
+    };
+  }
+
   receiveRemoteInput(event) {
-    if (!this.multiplayer || event?.type !== "input" || !event.playerSocketId) return;
+    if (!this.multiplayer || this.authoritative || event?.type !== "input" || !event.playerSocketId) return;
     this.remoteInputs.set(event.playerSocketId, { keys: event.keys || [] });
     const player = this.players.find((candidate) => candidate.socketId === event.playerSocketId);
     if (player && !player.local && event.usePower) {
@@ -1316,11 +1365,117 @@ export class SplobGame {
 
   sendInputIfChanged(force) {
     if (!this.multiplayer || !this.hooks.onInput) return;
-    const keys = this.sortedKeys();
-    const signature = keys.join("|");
+    const keys = this.authoritative ? this.inputKeys() : this.sortedKeys();
+    const signature = this.authoritative ? JSON.stringify(keys) : keys.join("|");
     if (!force && signature === this.lastInputSignature) return;
     this.lastInputSignature = signature;
     this.hooks.onInput({ type: "input", keys, usePower: false, matchTime: this.matchTime() });
+  }
+
+  applyServerSnapshot(snapshot) {
+    if (!this.authoritative || !snapshot) return;
+    this.serverTimeRemainingMs = Number(snapshot.timeRemainingMs ?? this.serverTimeRemainingMs);
+    const known = new Map(this.players.map((player) => [player.id, player]));
+    for (const item of snapshot.players || []) {
+      let player = known.get(item.id);
+      if (!player) {
+        player = this.createPlayers([{ ...item, local: item.socketId === this.config.localSocketId }])[0];
+        this.players.push(player);
+      }
+      player.socketId = item.socketId;
+      player.name = item.name || player.name;
+      player.color = item.color || player.color;
+      player.connected = item.connected !== false;
+      player.targetX = Number(item.x || 0);
+      player.targetY = Number(item.y || 0);
+      player.targetVx = Number(item.vx || 0);
+      player.targetVy = Number(item.vy || 0);
+      player.targetAngle = Number(item.angle || 0);
+      player.targetScore = Number(item.score || 0);
+      if (!player.hasServerPosition) {
+        player.x = player.targetX;
+        player.y = player.targetY;
+        player.vx = player.targetVx;
+        player.vy = player.targetVy;
+        player.angle = player.targetAngle;
+        player.hasServerPosition = true;
+      }
+    }
+  }
+
+  applyPaintBatch(batch) {
+    if (!this.authoritative || !batch?.stamps?.length) return;
+    for (const stamp of batch.stamps) this.drawServerPaintStamp(stamp);
+  }
+
+  drawServerPaintStamp(stamp) {
+    const color = PLAYER_COLORS[stamp.color]?.paint || PLAYER_COLORS[this.players.find((player) => player.id === stamp.playerId)?.color]?.paint;
+    if (!color) return;
+    this.paintCtx.save();
+    this.paintCtx.globalCompositeOperation = "source-over";
+    this.paintCtx.fillStyle = color;
+    this.paintCtx.beginPath();
+    this.paintCtx.arc(Number(stamp.x || 0), Number(stamp.y || 0), Number(stamp.radius || radius), 0, Math.PI * 2);
+    this.paintCtx.fill();
+    this.paintCtx.restore();
+  }
+
+  applyScoreUpdate(update) {
+    if (!this.authoritative || !update?.scores) return;
+    for (const score of update.scores) {
+      const player = this.players.find((candidate) => candidate.id === score.playerId);
+      if (player) {
+        player.coverage = Number(score.score || 0);
+        player.targetScore = player.coverage;
+      }
+    }
+  }
+
+  applyGameOver(result) {
+    if (!this.authoritative || !result) return;
+    this.serverGameOver = result;
+    this.phase = "stop";
+    this.applyScoreUpdate({ scores: result.finalScores || [] });
+    this.winner = this.players.find((player) => player.id === result.winnerPlayerId) || null;
+    this.overlay.innerHTML = `<div class="countdown">Stop!</div>`;
+    if (this.hud.results) this.hud.results.innerHTML = "";
+    this.players.forEach((player) => (player.mood = "expectant"));
+    setTimeout(() => this.revealServerResults(result), 1200);
+  }
+
+  revealServerResults(result) {
+    if (!this.running || this.phase !== "stop") return;
+    this.overlay.innerHTML = `<div class="countdown">Calculating...</div>`;
+    this.prepareScoreSlots();
+    const scoreMap = new Map((result.finalScores || []).map((score) => [score.playerId, Number(score.score || 0)]));
+    const standings = [...this.players]
+      .map((player) => ({ ...player, coverage: scoreMap.get(player.id) ?? player.coverage }))
+      .sort((a, b) => (b.coverage - a.coverage) || a.spawnIndex - b.spawnIndex);
+    [...standings].reverse().forEach((player, index) => {
+      setTimeout(() => {
+        if (!this.running || this.phase !== "stop") return;
+        this.addScoreRow(player, standings.findIndex((item) => item.id === player.id) + 1);
+        Sound.play("score", index);
+        if (index === standings.length - 1) this.resolveServerWinner(result.winnerPlayerId, standings);
+      }, 900 + index * 1000);
+    });
+  }
+
+  resolveServerWinner(winnerPlayerId, standings) {
+    this.phase = "results";
+    this.winner = this.players.find((player) => player.id === winnerPlayerId) || standings[0] || null;
+    this.players.forEach((player) => (player.mood = player.id === this.winner?.id ? "happy" : "sad"));
+    this.releaseConfetti();
+    const label = this.winner ? (this.winner.local ? "You win!" : `${this.winner.name} wins!`) : "Match over";
+    this.overlay.innerHTML = `
+      <div class="countdown result-title">${escapeText(label)}</div>
+      <div class="result-actions">
+        <button class="button asset-button result-asset-button" data-game-action="menu" aria-label="Main Menu"><img src="/assets/ui/main-menu.png" alt="" draggable="false" /></button>
+      </div>
+    `;
+    this.overlay.querySelector('[data-game-action="menu"]').addEventListener("click", () => this.hooks.onMenu?.());
+    Sound.play("fanfare");
+    if (this.winner?.local) Sound.play("win");
   }
 
 }

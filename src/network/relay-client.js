@@ -11,6 +11,13 @@ export class RelayClient {
     this.onLobby = null;
     this.onGameStart = null;
     this.onGameEvent = null;
+    this.onJoined = null;
+    this.onMatchStart = null;
+    this.onSnapshot = null;
+    this.onPaintBatch = null;
+    this.onScoreUpdate = null;
+    this.onGameOver = null;
+    this.onServerError = null;
     this.onJoinError = null;
     this.onKicked = null;
     this.onGameError = null;
@@ -78,6 +85,25 @@ export class RelayClient {
       message.config.syncedSimulation = true;
       this.onGameStart?.(message.config);
     }
+    if (message.type === "joined") this.onJoined?.(message);
+    if (message.type === "match:start") {
+      const config = {
+        ...(message.config || {}),
+        mode: "multiplayer",
+        authoritative: true,
+        localSocketId: this.id,
+        matchId: message.matchId,
+        startAt: message.startAt,
+        players: (message.players || message.config?.players || []).map((player) => ({ ...player, local: player.socketId === this.id }))
+      };
+      this.onMatchStart?.({ ...message, config });
+      this.onGameStart?.(config);
+    }
+    if (message.type === "snapshot") this.onSnapshot?.(message);
+    if (message.type === "paintBatch") this.onPaintBatch?.(message);
+    if (message.type === "scoreUpdate") this.onScoreUpdate?.(message);
+    if (message.type === "gameOver") this.onGameOver?.(message);
+    if (message.type === "serverError") this.onServerError?.(message);
     if (message.type === "game:event") this.onGameEvent?.(message.event);
     if (message.type === "join:error") this.onJoinError?.(message.reason);
     if (message.type === "lobby:kicked") this.onKicked?.();

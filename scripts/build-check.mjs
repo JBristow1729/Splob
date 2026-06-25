@@ -5,6 +5,7 @@ const required = [
   "manifest.webmanifest",
   "service-worker.js",
   "src/main.js",
+  "src/shared/game-constants.js",
   "src/styles.css",
   "src/game/splob-game.js",
   "src/ui/app.js",
