@@ -113,6 +113,12 @@ export function createApp(root) {
         Sound.configure(state.settings.sfx / 100);
       });
     });
+    root.querySelector("input[name=debugPanel]")?.addEventListener("change", (event) => {
+      state.settings.debugPanel = event.target.checked;
+      saveSettings(state.settings);
+      if (state.modal.includes("options-dialog")) state.modal = optionsDialog(state.settings, state.profile);
+      app.render();
+    });
     root.querySelectorAll("input[name=username]").forEach((input) => {
       input.addEventListener("change", async () => {
         state.settings.username = sanitizeUsername(input.value);
@@ -207,6 +213,7 @@ export function createApp(root) {
     state.game = new SplobGame(canvas, overlay, hud, state.pendingGame, {
       onAgain: () => startGame(state.pendingGame),
       onMenu: () => go("title"),
+      onDebug: (event) => sendDebugEvent(event),
       onInput: (event) => {
         if (state.pendingGame?.authoritative) {
           state.relay?.send({
@@ -224,7 +231,40 @@ export function createApp(root) {
       }
     });
     bindPointerControls(canvas, hud.power);
+    bindDebugControls();
     state.game.start();
+  }
+
+  function bindDebugControls() {
+    root.querySelectorAll("[data-debug-action]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const action = button.dataset.debugAction;
+        if (action === "togglePause") {
+          const paused = state.game?.debugToggleTimerPause?.();
+          button.textContent = paused ? "Resume timer" : "Pause timer";
+          return;
+        }
+        if (action === "endMatch") {
+          state.game?.debugEndMatch?.();
+          return;
+        }
+        if (action?.startsWith("power:")) {
+          state.game?.debugGrantPower?.(action.split(":")[1]);
+        }
+      });
+    });
+  }
+
+  function sendDebugEvent(event) {
+    if (!state.settings.debugPanel || !state.pendingGame?.authoritative) return;
+    state.relay?.send({
+      type: "debug",
+      action: event.action,
+      powerId: event.powerId,
+      clientTime: Date.now()
+    });
   }
 
   function bindPointerControls(canvas, powerBox) {

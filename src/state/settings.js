@@ -4,7 +4,8 @@ const defaultSettings = {
   music: 35,
   sfx: 80,
   preferredColor: "cyan",
-  username: ""
+  username: "",
+  debugPanel: false
 };
 
 export function loadSettings() {
@@ -29,7 +30,8 @@ function normalizeSettings(settings) {
     music: clampNumber(settings.music, 0, 100, defaultSettings.music),
     sfx: clampNumber(settings.sfx, 0, 100, defaultSettings.sfx),
     preferredColor: COLOR_ORDER.includes(settings.preferredColor) ? settings.preferredColor : defaultSettings.preferredColor,
-    username: sanitizeUsername(String(settings.username || ""))
+    username: sanitizeUsername(String(settings.username || "")),
+    debugPanel: Boolean(settings.debugPanel)
   };
 }
 

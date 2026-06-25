@@ -87,6 +87,9 @@ export class SplobGame {
     this.lastPowerShuffleStep = -1;
     this.lastEmergencySecond = null;
     this.winner = null;
+    this.timerPaused = false;
+    this.timerPausedAt = 0;
+    this.timerPausedTotal = 0;
     this.positionsInitialized = false;
     this.paint = document.createElement("canvas");
     this.paintCtx = this.paint.getContext("2d", { willReadFrequently: true });
@@ -110,6 +113,9 @@ export class SplobGame {
     this.roundSeconds = GAME_SECONDS;
     this.suddenDeath = false;
     this.suddenDeathLoops = 0;
+    this.timerPaused = false;
+    this.timerPausedAt = 0;
+    this.timerPausedTotal = 0;
     if (this.hud.results) this.hud.results.innerHTML = "";
     if (this.authoritative) {
       this.serverStarted = this.countdownAt <= now;
@@ -318,7 +324,7 @@ export class SplobGame {
     }
     if (this.phase !== "playing") return;
 
-    const secondsLeft = Math.max(0, this.roundSeconds - Math.floor((now - this.startedAt) / 1000));
+    const secondsLeft = this.secondsLeft(now);
     this.hud.timer.textContent = formatTime(secondsLeft);
     if (secondsLeft > 0 && secondsLeft <= 5 && secondsLeft !== this.lastEmergencySecond) {
       this.lastEmergencySecond = secondsLeft;
@@ -363,6 +369,61 @@ export class SplobGame {
       this.lastEmergencySecond = secondsLeft;
       Sound.play("countdown", secondsLeft);
     }
+  }
+
+  secondsLeft(now) {
+    const pausedTime = this.timerPaused ? this.timerPausedTotal + (now - this.timerPausedAt) : this.timerPausedTotal;
+    const elapsed = Math.max(0, now - this.startedAt - pausedTime);
+    return Math.max(0, this.roundSeconds - Math.floor(elapsed / 1000));
+  }
+
+  debugToggleTimerPause() {
+    if (this.authoritative) {
+      this.hooks.onDebug?.({ action: "togglePause" });
+      this.timerPaused = !this.timerPaused;
+      return this.timerPaused;
+    }
+    if (this.phase !== "playing") return this.timerPaused;
+    const now = performance.now();
+    if (this.timerPaused) {
+      this.timerPausedTotal += now - this.timerPausedAt;
+      this.timerPausedAt = 0;
+      this.timerPaused = false;
+    } else {
+      this.timerPaused = true;
+      this.timerPausedAt = now;
+    }
+    return this.timerPaused;
+  }
+
+  debugGrantPower(powerId) {
+    if (this.authoritative) {
+      this.hooks.onDebug?.({ action: "grantPower", powerId });
+      return;
+    }
+    const local = this.localPlayer();
+    const power = powerById(powerId);
+    if (!local || !power) return;
+    local.power = power;
+    local.rollingPower = null;
+    local.rollEndsAt = 0;
+    this.setPowerBox(power, false);
+  }
+
+  debugEndMatch() {
+    if (this.authoritative) {
+      this.hooks.onDebug?.({ action: "endMatch" });
+      return;
+    }
+    if (this.phase === "results" || this.phase === "stop") return;
+    const now = performance.now();
+    if (this.phase !== "playing") {
+      this.overlay.innerHTML = "";
+      this.phase = "playing";
+      this.startedAt = now;
+      this.roundSeconds = this.suddenDeath ? 15 : GAME_SECONDS;
+    }
+    this.finish(now);
   }
 
   interpolateServerPlayers(now = performance.now()) {
@@ -1488,6 +1549,7 @@ export class SplobGame {
   applyServerSnapshot(snapshot) {
     if (!this.authoritative || !snapshot) return;
     this.serverTimeRemainingMs = Number(snapshot.timeRemainingMs ?? this.serverTimeRemainingMs);
+    this.timerPaused = Boolean(snapshot.timerPaused);
     this.powerUps = (snapshot.powerUps || []).map((power) => ({
       id: power.id,
       x: Number(power.x || 0),

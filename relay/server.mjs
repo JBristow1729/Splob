@@ -94,6 +94,7 @@ function handle(id, message) {
   if (message.type === "ready") return setReady(id, true);
   if (message.type === "input") return receiveInput(id, message);
   if (message.type === "usePower") return receiveUsePower(id, message);
+  if (message.type === "debug") return receiveDebug(id, message);
 }
 
 function createLobby(id, message) {
@@ -266,6 +267,9 @@ function createMatch(lobby) {
     startsAt: now + countdownMs,
     startedAt: now + countdownMs,
     durationMs: GAME_SECONDS * 1000,
+    timerPaused: false,
+    timerPausedAt: 0,
+    timerPausedTotal: 0,
     ended: false,
     powerUps: [],
     projectiles: [],
@@ -305,6 +309,40 @@ function receiveUsePower(id, message) {
   match.inputs.set(id, { ...input, usePowerSeq: Number(message.seq || 0), clientTime: Number(message.clientTime || 0) });
 }
 
+function receiveDebug(id, message) {
+  const match = matches.get(clients.get(id)?.matchId);
+  if (!match || match.ended) return;
+  const player = match.players.find((item) => item.socketId === id);
+  if (!player) return;
+  if (message.action === "togglePause") {
+    toggleMatchTimerPause(match);
+    broadcastSnapshot(match);
+    return;
+  }
+  if (message.action === "endMatch") {
+    finishMatch(match);
+    return;
+  }
+  if (message.action === "grantPower" && powerIds.includes(message.powerId)) {
+    player.power = message.powerId;
+    player.rollingPower = null;
+    player.rollEndsAt = 0;
+    broadcastSnapshot(match);
+  }
+}
+
+function toggleMatchTimerPause(match) {
+  const now = Date.now();
+  if (match.timerPaused) {
+    match.timerPausedTotal += now - match.timerPausedAt;
+    match.timerPausedAt = 0;
+    match.timerPaused = false;
+  } else if (now >= match.startsAt) {
+    match.timerPaused = true;
+    match.timerPausedAt = now;
+  }
+}
+
 function tickMatch(matchId) {
   const match = matches.get(matchId);
   if (!match || match.ended) return;
@@ -339,7 +377,7 @@ function tickMatch(matchId) {
   if (match.tick % paintEvery === 0) flushPaint(match);
   if (match.tick % scoreEvery === 0) broadcastScore(match);
   if (match.tick % snapshotEvery === 0) broadcastSnapshot(match);
-  if (now - match.startedAt >= match.durationMs) finishMatch(match);
+  if (!match.timerPaused && elapsedMatchMs(match, now) >= match.durationMs) finishMatch(match);
 }
 
 function respawnPlayer(player) {
@@ -750,7 +788,8 @@ function broadcastSnapshot(match) {
     players: serializePlayers(match),
     powerUps: serializePowerUps(match),
     projectiles: serializeProjectiles(match),
-    timeRemainingMs: timeRemainingMs(match)
+    timeRemainingMs: timeRemainingMs(match),
+    timerPaused: match.timerPaused
   });
 }
 
@@ -972,7 +1011,12 @@ function matchConfig() {
 
 function timeRemainingMs(match) {
   if (Date.now() < match.startsAt) return match.durationMs;
-  return Math.max(0, match.durationMs - (Date.now() - match.startedAt));
+  return Math.max(0, match.durationMs - elapsedMatchMs(match, Date.now()));
+}
+
+function elapsedMatchMs(match, now) {
+  const currentPause = match.timerPaused ? now - match.timerPausedAt : 0;
+  return Math.max(0, now - match.startedAt - match.timerPausedTotal - currentPause);
 }
 
 function normalizeInputKeys(keys) {

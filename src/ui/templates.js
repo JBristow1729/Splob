@@ -1,4 +1,4 @@
-import { COLOR_ORDER, PLAYER_COLORS } from "../config.js";
+import { COLOR_ORDER, PLAYER_COLORS, POWER_UPS } from "../config.js";
 import { escapeHtml, fittedTextStyle } from "../utils/html.js";
 
 const APP_VERSION = "0.0.1";
@@ -110,7 +110,8 @@ export function renderJoin(state) {
   `;
 }
 
-export function renderGame() {
+export function renderGame(state) {
+  const showDebug = Boolean(state?.settings?.debugPanel);
   return `
     <main class="screen game-screen">
       <div class="game-hud">
@@ -122,6 +123,7 @@ export function renderGame() {
         <canvas id="gameCanvas"></canvas>
         <div class="game-overlay" id="gameOverlay"></div>
       </section>
+      ${showDebug ? debugPanel() : ""}
       <button class="power-box" id="powerBox" type="button" aria-label="Use power-up"></button>
     </main>
   `;
@@ -146,6 +148,10 @@ export function optionsDialog(settings, profile) {
         <span>Username</span>
         <input name="username" maxlength="16" value="${escapeHtml(settings.username)}" placeholder="Player" />
       </label>
+      <label class="toggle-row debug-option">
+        <input name="debugPanel" type="checkbox" ${settings.debugPanel ? "checked" : ""} />
+        <span>Debug panel</span>
+      </label>
       <div class="field">
         <span>Preferred Splob Colour</span>
         <div class="swatch-row">
@@ -161,6 +167,26 @@ export function optionsDialog(settings, profile) {
       </div>
       <div class="dialog-actions">${button("OK", "closeModal", "button-small")}</div>
     </section>
+  `;
+}
+
+function debugPanel() {
+  return `
+    <aside class="debug-panel" aria-label="Debug controls">
+      <div class="debug-heading">
+        <span>Debug</span>
+        <strong>Match Tools</strong>
+      </div>
+      <button class="debug-button" type="button" data-debug-action="togglePause">Pause timer</button>
+      <div class="debug-power-grid" aria-label="Grant power-up">
+        ${POWER_UPS.map((power) => `
+          <button class="debug-power-button" type="button" data-debug-action="power:${power.id}" title="${escapeHtml(power.name)}" aria-label="Give ${escapeHtml(power.name)}">
+            <img src="${power.iconSrc}" alt="" draggable="false" />
+          </button>
+        `).join("")}
+      </div>
+      <button class="debug-button debug-danger" type="button" data-debug-action="endMatch">End match</button>
+    </aside>
   `;
 }
 
