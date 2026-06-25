@@ -281,8 +281,11 @@ export function createApp(root) {
       state.modal = `<section class="dialog paint-dialog"><h2>No lobby found</h2><p>That game does not exist or is full.</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;
       app.render();
     };
-    state.relay.onGameError = () => {
-      state.modal = `<section class="dialog paint-dialog"><h2>Not ready yet</h2><p>Every player needs to ready-up before the match can start.</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;
+    state.relay.onGameError = (reason) => {
+      const copy = reason === "not-enough-players"
+        ? { title: "Need another player", body: "Multiplayer starts with 2 to 4 real players." }
+        : { title: "Not ready yet", body: "Every player needs to ready-up before the match can start." };
+      state.modal = `<section class="dialog paint-dialog"><h2>${copy.title}</h2><p>${copy.body}</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;
       app.render();
     };
     state.relay.onKicked = () => {
@@ -356,6 +359,11 @@ export function createApp(root) {
 
   function startMultiplayer() {
     if (!state.lobby?.players?.[0]?.local) return;
+    if ((state.lobby.players || []).length < 2) {
+      state.modal = `<section class="dialog paint-dialog"><h2>Need another player</h2><p>Multiplayer starts with 2 to 4 real players.</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;
+      app.render();
+      return;
+    }
     if (state.lobby.players.some((player) => !player.ready)) {
       state.modal = `<section class="dialog paint-dialog"><h2>Not ready yet</h2><p>Every player needs to ready-up before the match can start.</p><div class="dialog-actions"><button class="button button-small" data-action="closeModal"><span>OK</span></button></div></section>`;
       app.render();

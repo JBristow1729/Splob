@@ -26,6 +26,10 @@ const tickMs = 1000 / SERVER_TICK_RATE;
 const snapshotEvery = Math.max(1, Math.round(SERVER_TICK_RATE / SNAPSHOT_RATE));
 const paintEvery = Math.max(1, Math.round(SERVER_TICK_RATE / PAINT_BATCH_RATE));
 const scoreEvery = Math.max(1, Math.round(SERVER_TICK_RATE / SCORE_UPDATE_RATE));
+const countdownMs = 3400;
+const powerRadius = 56;
+const maxPowerUps = 5;
+const powerIds = ["boost", "grow", "messy", "splat", "shield", "slow", "shrink", "reverse", "freeze"];
 
 const server = createServer((req, res) => {
   if (req.url === "/health") {
@@ -155,6 +159,10 @@ function kickPlayer(id, playerId) {
 function startGame(id) {
   const lobby = lobbies.get(clients.get(id)?.lobbyCode);
   if (!lobby || lobby.hostId !== id || lobby.started) return;
+  if (lobby.players.length < 2) {
+    send(id, { type: "game:error", reason: "not-enough-players" });
+    return;
+  }
   if (lobby.players.some((player) => !player.ready)) {
     send(id, { type: "game:error", reason: "not-ready" });
     return;
@@ -180,7 +188,7 @@ function startGame(id) {
     type: "match:start",
     matchId: match.id,
     serverTick: match.tick,
-    startAt: match.startedAt,
+    startAt: match.startsAt,
     players: serializePlayers(match),
     config: { mode: "multiplayer", authoritative: true, players: serializePlayers(match), ...matchConfig() }
   });
@@ -209,7 +217,11 @@ function createMatch(lobby) {
       connected: true,
       score: 0,
       spawnIndex: index,
-      lastPaintTick: -99
+      lastPaintTick: -99,
+      power: null,
+      effects: {},
+      shieldUntil: 0,
+      lastPowerSeq: 0
     };
   });
   return {
@@ -218,9 +230,13 @@ function createMatch(lobby) {
     players,
     inputs: new Map(players.map((player) => [player.socketId, emptyInput()])),
     tick: 0,
-    startedAt: now,
+    createdAt: now,
+    startsAt: now + countdownMs,
+    startedAt: now + countdownMs,
     durationMs: GAME_SECONDS * 1000,
     ended: false,
+    powerUps: [],
+    nextPowerSpawnAt: now + countdownMs + 1200,
     paintQueue: [],
     scoreGrid: new Uint16Array(SCORE_GRID_WIDTH * SCORE_GRID_HEIGHT),
     scoreCounts: new Map(players.map((player) => [player.id, 0])),
@@ -258,30 +274,156 @@ function tickMatch(matchId) {
   const match = matches.get(matchId);
   if (!match || match.ended) return;
   const dt = 1 / SERVER_TICK_RATE;
+  const now = Date.now();
   match.tick += 1;
+  if (now < match.startsAt) {
+    if (match.tick % snapshotEvery === 0) broadcastSnapshot(match);
+    return;
+  }
+  if (now > match.nextPowerSpawnAt) spawnPowerUp(match, now);
   for (const player of match.players) {
     if (!player.connected) continue;
-    movePlayer(player, match.inputs.get(player.socketId) || emptyInput(), dt);
+    expireEffects(player, now);
+    consumePowerUse(match, player, match.inputs.get(player.socketId) || emptyInput(), now);
+    movePlayer(player, match.inputs.get(player.socketId) || emptyInput(), dt, now);
+    collectPowerUps(match, player, now);
     if (match.tick - player.lastPaintTick >= 2 && (Math.hypot(player.vx, player.vy) > 4 || player.lastPaintTick < 0)) {
       player.lastPaintTick = match.tick;
-      addPaintStamp(match, player, PLAYER_RADIUS);
+      addPaintStamp(match, player, PLAYER_RADIUS * playerSizeMultiplier(player, now));
     }
   }
+  resolveBlobCollisions(match, now);
   if (match.tick % paintEvery === 0) flushPaint(match);
   if (match.tick % scoreEvery === 0) broadcastScore(match);
   if (match.tick % snapshotEvery === 0) broadcastSnapshot(match);
-  if (Date.now() - match.startedAt >= match.durationMs) finishMatch(match);
+  if (now - match.startedAt >= match.durationMs) finishMatch(match);
 }
 
-function movePlayer(player, input, dt) {
+function movePlayer(player, input, dt, now) {
   const keys = input.keys || emptyInput().keys;
   const xAxis = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
   const yAxis = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
-  player.vx = approachVelocity(player.vx, xAxis * MAX_MOVE_SPEED, dt);
-  player.vy = approachVelocity(player.vy, yAxis * MAX_MOVE_SPEED, dt);
+  const slow = player.effects.slowUntil > now ? 0.5 : 1;
+  const boost = player.effects.boostUntil > now ? 1.5 : 1;
+  const reversed = player.effects.reverseUntil > now;
+  const frozen = player.effects.freezeUntil > now;
+  const speedLimit = MAX_MOVE_SPEED * slow * boost;
+  const targetX = frozen ? 0 : (reversed ? -xAxis : xAxis) * speedLimit;
+  const targetY = frozen ? 0 : (reversed ? -yAxis : yAxis) * speedLimit;
+  player.vx = approachVelocity(player.vx, targetX, dt);
+  player.vy = approachVelocity(player.vy, targetY, dt);
   if (Math.hypot(player.vx, player.vy) > 8) player.angle = Math.atan2(player.vy, player.vx);
-  player.x = clamp(player.x + player.vx * dt, BODY_HALF_WIDTH, ARENA_WIDTH - BODY_HALF_WIDTH);
-  player.y = clamp(player.y + player.vy * dt, BODY_HALF_HEIGHT, ARENA_HEIGHT - BODY_HALF_HEIGHT);
+  const size = playerSizeMultiplier(player, now);
+  const halfWidth = BODY_HALF_WIDTH * size;
+  const halfHeight = BODY_HALF_HEIGHT * size;
+  const nextX = player.x + player.vx * dt;
+  const nextY = player.y + player.vy * dt;
+  const clampedX = clamp(nextX, halfWidth, ARENA_WIDTH - halfWidth);
+  const clampedY = clamp(nextY, halfHeight, ARENA_HEIGHT - halfHeight);
+  if (clampedX !== nextX) player.vx = 0;
+  if (clampedY !== nextY) player.vy = 0;
+  player.x = clampedX;
+  player.y = clampedY;
+}
+
+function resolveBlobCollisions(match, now) {
+  for (let i = 0; i < match.players.length; i += 1) {
+    for (let j = i + 1; j < match.players.length; j += 1) {
+      const a = match.players[i];
+      const b = match.players[j];
+      if (!a.connected || !b.connected) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const distance = Math.hypot(dx, dy) || 1;
+      const minDistance = PLAYER_RADIUS * 1.55 * (playerSizeMultiplier(a, now) + playerSizeMultiplier(b, now)) * 0.5;
+      if (distance >= minDistance) continue;
+      const nx = dx / distance;
+      const ny = dy / distance;
+      const push = (minDistance - distance) / 2;
+      a.x = clamp(a.x - nx * push, BODY_HALF_WIDTH, ARENA_WIDTH - BODY_HALF_WIDTH);
+      a.y = clamp(a.y - ny * push, BODY_HALF_HEIGHT, ARENA_HEIGHT - BODY_HALF_HEIGHT);
+      b.x = clamp(b.x + nx * push, BODY_HALF_WIDTH, ARENA_WIDTH - BODY_HALF_WIDTH);
+      b.y = clamp(b.y + ny * push, BODY_HALF_HEIGHT, ARENA_HEIGHT - BODY_HALF_HEIGHT);
+      const aNormalVelocity = a.vx * nx + a.vy * ny;
+      const bNormalVelocity = b.vx * nx + b.vy * ny;
+      if (aNormalVelocity > bNormalVelocity) {
+        const exchange = aNormalVelocity - bNormalVelocity;
+        a.vx -= nx * exchange * 0.8;
+        a.vy -= ny * exchange * 0.8;
+        b.vx += nx * exchange * 0.8;
+        b.vy += ny * exchange * 0.8;
+      }
+    }
+  }
+}
+
+function spawnPowerUp(match, now) {
+  if (match.powerUps.length < maxPowerUps) {
+    match.powerUps.push({
+      id: randomUUID(),
+      x: round(powerRadius + 24 + Math.random() * (ARENA_WIDTH - (powerRadius + 24) * 2)),
+      y: round(powerRadius + 24 + Math.random() * (ARENA_HEIGHT - (powerRadius + 24) * 2)),
+      born: now
+    });
+  }
+  match.nextPowerSpawnAt = now + 2500 + Math.random() * 2000;
+}
+
+function collectPowerUps(match, player, now) {
+  if (player.power) return;
+  const hit = match.powerUps.find((power) => Math.hypot(power.x - player.x, power.y - player.y) <= PLAYER_RADIUS + powerRadius);
+  if (!hit) return;
+  match.powerUps = match.powerUps.filter((power) => power.id !== hit.id);
+  player.power = powerIds[(Math.random() * powerIds.length) | 0];
+}
+
+function consumePowerUse(match, player, input, now) {
+  if (!player.power || !input.usePowerSeq || input.usePowerSeq === player.lastPowerSeq) return;
+  player.lastPowerSeq = input.usePowerSeq;
+  const power = player.power;
+  player.power = null;
+  if (power === "boost") {
+    player.effects.boostUntil = now + 5000;
+    return;
+  }
+  if (power === "grow") {
+    player.effects.growUntil = now + 5000;
+    return;
+  }
+  if (power === "messy") {
+    player.effects.messyUntil = now + 10000;
+    return;
+  }
+  if (power === "shield") {
+    player.shieldUntil = now + 10000;
+    return;
+  }
+  if (power === "splat") {
+    addPaintStamp(match, player, PLAYER_RADIUS * 5);
+    return;
+  }
+  const opponents = match.players.filter((opponent) => opponent.id !== player.id && opponent.connected && opponent.shieldUntil <= now);
+  if (power === "slow") opponents.forEach((opponent) => (opponent.effects.slowUntil = now + 5000));
+  if (power === "shrink") opponents.forEach((opponent) => (opponent.effects.shrinkUntil = now + 5000));
+  if (power === "reverse") opponents.forEach((opponent) => (opponent.effects.reverseUntil = now + 5000));
+  if (power === "freeze") opponents.forEach((opponent) => {
+    opponent.effects.freezeUntil = now + 3000;
+    opponent.vx = 0;
+    opponent.vy = 0;
+  });
+}
+
+function expireEffects(player, now) {
+  for (const key of Object.keys(player.effects)) {
+    if (player.effects[key] <= now) delete player.effects[key];
+  }
+  if (player.shieldUntil <= now) player.shieldUntil = 0;
+}
+
+function playerSizeMultiplier(player, now) {
+  const grow = player.effects.growUntil > now ? 1.3 : 1;
+  const shrink = player.effects.shrinkUntil > now ? 0.7 : 1;
+  return grow * shrink;
 }
 
 function addPaintStamp(match, player, radius) {
@@ -339,6 +481,7 @@ function broadcastSnapshot(match) {
     serverTick: match.tick,
     serverTime: Date.now(),
     players: serializePlayers(match),
+    powerUps: serializePowerUps(match),
     timeRemainingMs: timeRemainingMs(match)
   });
 }
@@ -438,7 +581,19 @@ function serializePlayers(match) {
     vy: round(player.vy),
     angle: round(player.angle, 4),
     connected: player.connected,
-    score: player.score
+    score: player.score,
+    power: player.power,
+    effects: player.effects,
+    shieldUntil: player.shieldUntil
+  }));
+}
+
+function serializePowerUps(match) {
+  return match.powerUps.map((power) => ({
+    id: power.id,
+    x: power.x,
+    y: power.y,
+    born: power.born
   }));
 }
 
@@ -453,6 +608,7 @@ function matchConfig() {
 }
 
 function timeRemainingMs(match) {
+  if (Date.now() < match.startsAt) return match.durationMs;
   return Math.max(0, match.durationMs - (Date.now() - match.startedAt));
 }
 

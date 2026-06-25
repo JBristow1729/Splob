@@ -80,6 +80,7 @@ export class SplobGame {
     this.lastInputSignature = "";
     this.serverTimeRemainingMs = Number(config.durationMs || GAME_SECONDS * 1000);
     this.serverGameOver = null;
+    this.serverStarted = false;
     this.matchStartAt = Number(config.startAt || 0);
     this.lastPowerShuffleStep = -1;
     this.lastEmergencySecond = null;
@@ -100,7 +101,7 @@ export class SplobGame {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     this.running = true;
-    this.phase = this.authoritative ? "playing" : "countdown";
+    this.phase = "countdown";
     const now = performance.now();
     this.countdownAt = this.multiplayer && this.matchStartAt ? now + (this.matchStartAt - Date.now()) : now;
     this.last = now;
@@ -109,7 +110,11 @@ export class SplobGame {
     this.suddenDeathLoops = 0;
     if (this.hud.results) this.hud.results.innerHTML = "";
     if (this.authoritative) {
-      this.overlay.innerHTML = "";
+      this.serverStarted = this.countdownAt <= now;
+      if (this.serverStarted) {
+        this.phase = "playing";
+        this.overlay.innerHTML = "";
+      }
       this.startedAt = now;
       this.sendInputIfChanged(true);
     }
@@ -296,27 +301,67 @@ export class SplobGame {
   }
 
   updateAuthoritativeRender(now) {
+    this.interpolateServerPlayers(now);
+    if (this.phase === "countdown") {
+      const index = Math.max(0, Math.floor((now - this.countdownAt) / 850));
+      this.overlay.innerHTML = `<div class="countdown">${COUNTDOWN_LABELS[index] || ""}</div><div class="you-cue">YOU</div>`;
+      const local = this.localPlayer() || this.players[0];
+      if (local) {
+        this.overlay.style.setProperty("--you-x", `${(local.x / this.canvas.width) * 100}%`);
+        this.overlay.style.setProperty("--you-y", `${(local.y / this.canvas.height) * 100}%`);
+      }
+      if (index >= COUNTDOWN_LABELS.length || Date.now() >= this.matchStartAt) {
+        this.overlay.innerHTML = "";
+        this.phase = "playing";
+        this.serverStarted = true;
+        this.lastEmergencySecond = null;
+      }
+      this.hud.timer.textContent = formatTime(Math.ceil(this.serverTimeRemainingMs / 1000));
+      this.updateAuthoritativePowerHud();
+      return;
+    }
     if (this.phase !== "playing") return;
-    this.interpolateServerPlayers();
     const secondsLeft = Math.max(0, Math.ceil(this.serverTimeRemainingMs / 1000));
     this.hud.timer.textContent = formatTime(secondsLeft);
+    this.updateAuthoritativePowerHud();
     if (secondsLeft > 0 && secondsLeft <= 5 && secondsLeft !== this.lastEmergencySecond) {
       this.lastEmergencySecond = secondsLeft;
       Sound.play("countdown", secondsLeft);
     }
   }
 
-  interpolateServerPlayers() {
+  interpolateServerPlayers(now = performance.now()) {
     for (const player of this.players) {
-      if (typeof player.targetX !== "number" || typeof player.targetY !== "number") continue;
-      const factor = player.local ? 0.48 : 0.28;
-      player.x += (player.targetX - player.x) * factor;
-      player.y += (player.targetY - player.y) * factor;
-      player.vx = player.targetVx || 0;
-      player.vy = player.targetVy || 0;
-      player.angle = typeof player.targetAngle === "number" ? player.targetAngle : player.angle;
+      const frames = player.serverFrames || [];
+      const renderAt = now - 110;
+      while (frames.length > 2 && frames[1].receivedAt <= renderAt) frames.shift();
+      const previous = frames[0];
+      const next = frames[1];
+      if (previous && next && next.receivedAt > previous.receivedAt) {
+        const t = Math.max(0, Math.min(1, (renderAt - previous.receivedAt) / (next.receivedAt - previous.receivedAt)));
+        player.x = lerp(previous.x, next.x, t);
+        player.y = lerp(previous.y, next.y, t);
+        player.vx = lerp(previous.vx, next.vx, t);
+        player.vy = lerp(previous.vy, next.vy, t);
+        player.angle = lerpAngle(previous.angle, next.angle, t);
+      } else if (previous) {
+        const factor = player.local ? 0.32 : 0.22;
+        player.x += (previous.x - player.x) * factor;
+        player.y += (previous.y - player.y) * factor;
+        player.vx = previous.vx;
+        player.vy = previous.vy;
+        player.angle = previous.angle;
+      } else if (typeof player.targetX === "number" && typeof player.targetY === "number") {
+        player.x = player.targetX;
+        player.y = player.targetY;
+      }
       player.coverage = typeof player.targetScore === "number" ? player.targetScore : player.coverage;
     }
+  }
+
+  updateAuthoritativePowerHud() {
+    const local = this.localPlayer() || this.players[0];
+    this.setPowerBox(local?.power, false);
   }
 
   updatePowerSlot(now) {
@@ -1375,7 +1420,14 @@ export class SplobGame {
   applyServerSnapshot(snapshot) {
     if (!this.authoritative || !snapshot) return;
     this.serverTimeRemainingMs = Number(snapshot.timeRemainingMs ?? this.serverTimeRemainingMs);
+    this.powerUps = (snapshot.powerUps || []).map((power) => ({
+      id: power.id,
+      x: Number(power.x || 0),
+      y: Number(power.y || 0),
+      born: performance.now() - Math.max(0, Date.now() - Number(power.born || Date.now()))
+    }));
     const known = new Map(this.players.map((player) => [player.id, player]));
+    const receivedAt = performance.now();
     for (const item of snapshot.players || []) {
       let player = known.get(item.id);
       if (!player) {
@@ -1392,6 +1444,17 @@ export class SplobGame {
       player.targetVy = Number(item.vy || 0);
       player.targetAngle = Number(item.angle || 0);
       player.targetScore = Number(item.score || 0);
+      player.power = powerById(item.power);
+      player.effects = localEffectTimes(item.effects || {});
+      player.shieldUntil = localExpiryTime(item.shieldUntil);
+      player.serverFrames = (player.serverFrames || []).concat({
+        receivedAt,
+        x: player.targetX,
+        y: player.targetY,
+        vx: player.targetVx,
+        vy: player.targetVy,
+        angle: player.targetAngle
+      }).slice(-8);
       if (!player.hasServerPosition) {
         player.x = player.targetX;
         player.y = player.targetY;
@@ -1541,6 +1604,30 @@ function weightedChoice(items, weights, random = Math.random) {
     if (roll <= 0) return items[index];
   }
   return items[items.length - 1];
+}
+
+function powerById(id) {
+  return POWER_UPS.find((power) => power.id === id) || null;
+}
+
+function localExpiryTime(serverExpiry) {
+  const expiry = Number(serverExpiry || 0);
+  return expiry > Date.now() ? performance.now() + (expiry - Date.now()) : 0;
+}
+
+function localEffectTimes(effects) {
+  return Object.fromEntries(Object.entries(effects || {}).map(([key, value]) => [key, localExpiryTime(value)]));
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function lerpAngle(a, b, t) {
+  let delta = b - a;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return a + delta * t;
 }
 
 function seededRandom(seed) {
