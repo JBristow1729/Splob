@@ -1,7 +1,7 @@
 import { COLOR_ORDER, PLAYER_COLORS, POWER_UPS } from "../config.js";
 import { escapeHtml, fittedTextStyle } from "../utils/html.js";
 
-const APP_VERSION = "0.8.1";
+const APP_VERSION = "0.9.0";
 
 const assetButtons = {
   "Singleplayer": "/assets/ui/singleplayer.png",
@@ -29,6 +29,7 @@ export function renderTitle(state) {
         ${button("Singleplayer", "singleplayer")}
         ${button("Multiplayer", "multiplayer")}
       </nav>
+      ${button("How to play", "howToPlay", "button-small button-secondary how-to-play-toggle")}
       <div class="version-label">Version: ${APP_VERSION}</div>
       ${cornerButtons(state)}
       ${state.modal ? modal(state.modal) : ""}
@@ -271,6 +272,21 @@ export function confirmLeaveDialog() {
         ${button("No", "closeModal", "button-small button-secondary")}
         ${button("Yes", "confirmLeaveGame", "button-small")}
       </div>
+    </section>
+  `;
+}
+
+export function howToPlayDialog() {
+  return `
+    <section class="dialog paint-dialog how-to-play-dialog" role="dialog" aria-modal="true" aria-labelledby="howToPlayTitle">
+      <div class="dialog-heading">
+        <span>Splob School</span>
+        <h2 id="howToPlayTitle">How to play</h2>
+      </div>
+      <p>Your goal is to paint as much of the canvas as possible!</p>
+      <p>Control your splob with WASD. Collect power-ups and hit space to use them.</p>
+      <p>If people go over your paint too much, you build up a fart! Press shift to fart near someone to spin them out and give yourself a little boost!</p>
+      <div class="dialog-actions">${button("OK", "closeModal", "button-small")}</div>
     </section>
   `;
 }

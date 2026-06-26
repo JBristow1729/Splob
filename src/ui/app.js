@@ -18,6 +18,7 @@ import {
 import {
   confirmLeaveDialog,
   friendsDialog,
+  howToPlayDialog,
   multiplayerStatusDialog,
   noticeDialog,
   optionsDialog,
@@ -263,6 +264,10 @@ export function createApp(root) {
         app.render();
       },
       friends: () => openFriends("friends"),
+      howToPlay: () => {
+        state.modal = howToPlayDialog();
+        app.render();
+      },
       closeModal: () => {
         if (state.modal.includes("play-again-alone")) return go("title");
         if (state.modal.includes("play-again-dialog")) return choosePlayAgain(false);

@@ -1,5 +1,5 @@
-export const ARENA_WIDTH = 1280;
-export const ARENA_HEIGHT = 720;
+export const ARENA_WIDTH = 1664;
+export const ARENA_HEIGHT = 936;
 export const GAME_SECONDS = 60;
 export const SUDDEN_DEATH_SECONDS = 15;
 

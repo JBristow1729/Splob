@@ -232,13 +232,27 @@ button {
 .version-label {
   position: fixed;
   left: 1rem;
-  bottom: 0.75rem;
+  bottom: 4.2rem;
   z-index: 2;
   color: rgba(255, 249, 234, 0.82);
   font-size: 0.85rem;
   font-weight: 900;
   text-shadow: 0 2px 3px rgba(50, 24, 61, 0.42);
   pointer-events: none;
+}
+
+.how-to-play-toggle {
+  position: fixed;
+  left: 1rem;
+  bottom: 1rem;
+  z-index: 3;
+}
+
+.how-to-play-dialog p {
+  margin: 0;
+  font-size: 1.08rem;
+  font-weight: 900;
+  line-height: 1.35;
 }
 
 .options-toggle,
@@ -1076,8 +1090,13 @@ button {
 
   .version-label {
     left: 0.55rem;
-    bottom: max(0.6rem, env(safe-area-inset-bottom));
+    bottom: max(3.35rem, calc(env(safe-area-inset-bottom) + 3.1rem));
     font-size: 0.72rem;
+  }
+
+  .how-to-play-toggle {
+    left: 0.55rem;
+    bottom: max(0.55rem, env(safe-area-inset-bottom));
   }
 
   .dialog,

@@ -1,4 +1,4 @@
-import { AI_NAMES, COLOR_ORDER, COUNTDOWN_LABELS, GAME_SECONDS, PLAYER_COLORS, POWER_UPS, SUDDEN_DEATH_SECONDS } from "../config.js";
+import { AI_NAMES, ARENA_HEIGHT, ARENA_WIDTH, COLOR_ORDER, COUNTDOWN_LABELS, GAME_SECONDS, PLAYER_COLORS, POWER_UPS, SUDDEN_DEATH_SECONDS } from "../config.js";
 import { Sound } from "../audio/sound.js";
 
 const radius = 72;
@@ -43,8 +43,6 @@ const paintOwnerGridHeight = 90;
 const suddenDeathPowerSpawnMultiplier = 10;
 const whiteRainColor = "#fffdf4";
 const powerBallColors = ["#00b7e8", "#ec159b", "#f4d12f", "#26c95f"];
-const arenaWidth = 1280;
-const arenaHeight = 720;
 const placePowerBands = [
   { place: 1, powers: ["shield", "banana"] },
   { place: 2, powers: ["reverse", "messy", "spiky", "paintball"] },
@@ -214,8 +212,8 @@ export class SplobGame {
   }
 
   resize() {
-    const width = arenaWidth;
-    const height = arenaHeight;
+    const width = ARENA_WIDTH;
+    const height = ARENA_HEIGHT;
     if (this.canvas.width === width && this.canvas.height === height && this.positionsInitialized) return;
     const oldPaint = this.paint;
     this.canvas.width = width;
