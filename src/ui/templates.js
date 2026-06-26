@@ -1,7 +1,7 @@
 import { COLOR_ORDER, PLAYER_COLORS, POWER_UPS } from "../config.js";
 import { escapeHtml, fittedTextStyle } from "../utils/html.js";
 
-const APP_VERSION = "0.9.0";
+const APP_VERSION = "0.9.1";
 
 const assetButtons = {
   "Singleplayer": "/assets/ui/singleplayer.png",
@@ -212,22 +212,6 @@ export function usernameDialog(state) {
         ${button("Cancel", "closeModal", "button-small button-secondary")}
         ${button("Save", "saveUsername", "button-small")}
       </div>
-    </section>
-  `;
-}
-
-export function multiplayerStatusDialog(status) {
-  const heading = status?.state === "missing-url" ? "Relay not configured" : status?.state === "error" ? "Connection failed" : "Connecting";
-  const message = status?.message || "Connecting to multiplayer. This can take up to 60 seconds if the relay is waking up.";
-  const canClose = status?.state === "missing-url" || status?.state === "error" || status?.state === "closed";
-  return `
-    <section class="dialog paint-dialog relay-dialog" role="dialog" aria-modal="true" aria-labelledby="relayTitle">
-      <div class="dialog-heading">
-        <span>Multiplayer</span>
-        <h2 id="relayTitle">${escapeHtml(heading)}</h2>
-      </div>
-      <p class="empty">${escapeHtml(message)}</p>
-      ${canClose ? `<div class="dialog-actions">${button("OK", "closeModal", "button-small")}</div>` : `<div class="dialog-actions"><span class="loading-dot" aria-hidden="true"></span></div>`}
     </section>
   `;
 }

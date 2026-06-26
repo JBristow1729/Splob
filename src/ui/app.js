@@ -19,7 +19,6 @@ import {
   confirmLeaveDialog,
   friendsDialog,
   howToPlayDialog,
-  multiplayerStatusDialog,
   noticeDialog,
   optionsDialog,
   playAgainWaitingDialog,
@@ -242,7 +241,7 @@ export function createApp(root) {
     if (action?.startsWith("challengeFriend:")) return challengeFriend(action.split(":")[1]);
     const actions = {
       singleplayer: () => startGame({ mode: "singleplayer", players: localPlayers() }),
-      multiplayer: () => requireProfile("multiplayer") || go("multiplayer"),
+      multiplayer: () => requireProfile("multiplayer") || openMultiplayerMenu(),
       host: () => requireProfile("host") || hostLobby(),
       join: () => requireProfile("join") || openJoin(),
       refreshLobbies: () => state.relay?.send({ type: "lobbies:list" }),
@@ -413,6 +412,11 @@ export function createApp(root) {
     return [{ id: "local", local: true, name: username(), color: state.settings.preferredColor }];
   }
 
+  function openMultiplayerMenu() {
+    go("multiplayer");
+    ensureRelay();
+  }
+
   function ensureRelay() {
     if (state.relay) return state.relay;
     state.relay = new RelayClient();
@@ -420,14 +424,13 @@ export function createApp(root) {
       state.relayStatus = status;
       if (status.state === "connected") {
         if (state.profile) state.relay?.send({ type: "identify", profile: state.profile });
-        if (state.modal.includes("relay-dialog")) state.modal = "";
         app.render();
         return;
       }
-      if (status.state === "closed") return;
-      if (state.modal.includes("friends-dialog") && status.state === "connecting") return;
-      state.modal = multiplayerStatusDialog(status);
-      app.render();
+      if (status.state === "missing-url" || status.state === "error") {
+        state.modal = noticeDialog(status.message || "Multiplayer is unavailable.");
+        app.render();
+      }
     };
     state.relay.onLobbies = (lobbies) => {
       state.lobbies = lobbies;
@@ -526,18 +529,12 @@ export function createApp(root) {
   function hostLobby() {
     const relay = ensureRelay();
     if (!relay.send({ type: "lobby:create", public: false, player: localLobbyPlayer() })) return;
-    state.modal = multiplayerStatusDialog({ state: "connecting", message: "Creating your lobby. This can take up to 60 seconds if the relay is waking up." });
-    app.render();
   }
 
   function openJoin() {
     const relay = ensureRelay();
     if (!relay.send({ type: "lobbies:list" })) return;
     go("join");
-    if (state.relayStatus?.state !== "connected") {
-      state.modal = multiplayerStatusDialog(state.relayStatus || { state: "connecting" });
-      app.render();
-    }
   }
 
   function joinPrivate() {
@@ -548,8 +545,6 @@ export function createApp(root) {
   function joinLobby(code) {
     const relay = ensureRelay();
     if (!relay.send({ type: "lobby:join", code, player: localLobbyPlayer() })) return;
-    state.modal = multiplayerStatusDialog({ state: "connecting", message: "Joining the lobby. This can take up to 60 seconds if the relay is waking up." });
-    app.render();
   }
 
   function localLobbyPlayer() {
@@ -691,7 +686,7 @@ export function createApp(root) {
   }
 
   function runProfileAction(action) {
-    if (action === "multiplayer") return go("multiplayer");
+    if (action === "multiplayer") return openMultiplayerMenu();
     if (action === "host") return hostLobby();
     if (action === "join") return openJoin();
     if (action?.startsWith("friends:")) return openFriends(action.split(":")[1]);
@@ -724,10 +719,11 @@ export function createApp(root) {
   }
 
   function watchVisibleProfiles() {
+    if (!state.relay) return;
     if (!state.profile?.id) return;
     const ids = [...new Set([...state.friends, ...state.recents, ...state.requests, ...state.searchResults].map((player) => player.id).filter(Boolean))];
     if (!ids.length) return;
-    ensureRelay().send({ type: "watchProfiles", profileIds: ids });
+    state.relay.send({ type: "watchProfiles", profileIds: ids });
   }
 
   function acceptInvite() {
@@ -735,7 +731,6 @@ export function createApp(root) {
     const invite = state.incomingInvite;
     state.incomingInvite = null;
     ensureRelay().send({ type: "acceptInvite", lobbyId: invite.lobbyId, player: localLobbyPlayer() });
-    state.modal = multiplayerStatusDialog({ state: "connecting", message: "Joining the challenge." });
     app.render();
   }
 
